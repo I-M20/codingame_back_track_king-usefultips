@@ -121,6 +121,7 @@ Each time we want a A* distance, verify if a cache entry exist :
 
 ## Next steps
 
+- But many games are lost because of infinite WAIT action trhown each turn...
 - Créer une heuristic
 - Timeout quand map pleine ?
 - Timeout quand une town est isolé ?
@@ -139,6 +140,14 @@ Each time we want a A* distance, verify if a cache entry exist :
 
 ## Versions
 
+### v2.1
+
+Reduce time budget from 45ms to 30ms : No remaining timeouts
+But many games are lost because of infinite WAIT action trhown each turn...
+
+Last moment in arena: -
+First moment in arena: 100/400 Bronze
+
 ### v2.0
 
 Nested beam searches: an outer one plans turns ahead, and for each of its
@@ -155,7 +164,7 @@ interruptible, playing the best line found when the turn budget runs out.
 - Disrupt choice: the region where the opponent owns the most connection
     rails more than we do. Four disrupts ink a region and erase its rails.
 
-Last moment in arena: -
+Last moment in arena: 230/450 Bronze
 First moment in arena: 191/558 Bronze
 
 ### v1.0

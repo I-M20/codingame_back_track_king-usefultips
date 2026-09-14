@@ -2114,7 +2114,9 @@ public:
 
                 // Nothing left to build: still play the turn, so the line
                 // keeps evolving through the opponent's rails and the
-                // disrupts.
+                // disrupts. The placeholder names an empty turn, so a line
+                // rooted on it prints as WAIT if it reaches the front of the
+                // beam -- run() prefers a playable line over it at the end.
                 if (myTurns.empty())
                     myTurns.push_back(ActionSet());
 
@@ -2189,7 +2191,16 @@ public:
             // might still be the best available. The two sets are merged
             // instead and ranked together, which is sound because evaluate()
             // returns a per-turn rate rather than a depth-dependent total.
-            if (!depthComplete)
+            //
+            // Depth 0 is the exception: its only "parent" is the root, which
+            // carries no rootAction at all -- the root move is assigned to the
+            // children here, never to the root itself. Merging it back would
+            // put a do-nothing candidate into the ranking, and it wins
+            // whenever the opponent is out-earning us (its income term is a
+            // flat 0 while every real child carries bankedSelf - bankedOther,
+            // which is negative then). That is a WAIT every turn, for as long
+            // as the board stays big enough to truncate depth 0.
+            if (!depthComplete && depth > 0)
             {
                 for (BeamNode &node : beam)
                     nextBeam.push_back(move(node));
@@ -2214,9 +2225,28 @@ public:
 
         if (!beam.empty())
         {
-            const BeamNode &best = beam.front();
-            outAction = best.rootAction;
-            outDisrupt = best.rootDisrupt;
+            // The beam is score-sorted, so the front is the best line. It can
+            // still name an empty turn -- the myTurns.empty() placeholder
+            // above is a legitimate candidate -- and an empty rootAction with
+            // no disrupt is printed as WAIT, forfeiting the turn. Prefer the
+            // best line that actually plays something; fall back to the front
+            // only when no line in the beam places a rail, which is the one
+            // case where WAIT is the honest answer.
+            const BeamNode *best = &beam.front();
+            if (best->rootAction.empty() && best->rootDisrupt == -1)
+            {
+                for (const BeamNode &node : beam)
+                {
+                    if (!node.rootAction.empty() || node.rootDisrupt != -1)
+                    {
+                        best = &node;
+                        break;
+                    }
+                }
+            }
+
+            outAction = best->rootAction;
+            outDisrupt = best->rootDisrupt;
         }
     }
 };
@@ -2284,10 +2314,6 @@ public:
 
         vector<string> actions;
 
-        // The engine resolves every PLACE_TRACKS before any DISRUPT, so the
-        // commands are emitted in that same order.
-        // The search already decided the exact cells, so they are emitted
-        // verbatim rather than replanned from a pair of endpoints.
         for (const Coord &c : action.cells)
             actions.push_back("PLACE_TRACKS " + to_string(c.x) + " " + to_string(c.y));
         int placed = (int)action.cells.size();
