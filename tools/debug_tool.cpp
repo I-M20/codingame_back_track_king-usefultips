@@ -34,6 +34,22 @@ struct CandidateRecord
     int prefixLen;
 };
 
+// One round of the intra-turn beam: the rails already laid, and what every
+// affordable cell would score as the next one. A turn spends 3 paint one rail
+// at a time, so a turn yields up to three of these -- the heatmap for the
+// first rail, then for the second given the first, then for the third.
+//
+// The beam keeps NESTED_BEAM_WIDTH lines per round, so rounds after the first
+// score their cells against many different prefixes. Recording them all would
+// put several conflicting numbers on one cell, so each round keeps a single
+// prefix: the best line of that round, by the beam's own ordering.
+struct BeamRound
+{
+    vector<Coord> prefix;
+    int prefixGap = 0;
+    vector<CandidateRecord> candidates;
+};
+
 // Everything one turn of the search revealed about itself. Filled by the DBG_*
 // hooks, flushed to JSON once the move is out.
 class DebugProbe
@@ -43,7 +59,8 @@ public:
     bool haveBoard = false;
     Map board;
     vector<pair<int, int>> wishes;
-    vector<CandidateRecord> candidates;
+    // One entry per rail of the turn, per player: rounds[owner][depth].
+    map<int, vector<BeamRound>> rounds;
     int baselineGap = 0;
     bool haveBaseline = false;
     ActionSet decision;
@@ -64,16 +81,13 @@ public:
     int passIndex = -1;
     bool capturing = false;
     static const int ROOT_PASSES = 2;
-    // (owner, cell) already recorded this turn.
-    unordered_set<long long> seenCandidate;
 
     void beginTurn(const Map &b, const vector<pair<int, int>> &w)
     {
         board = b;
         wishes = w;
         haveBoard = true;
-        candidates.clear();
-        seenCandidate.clear();
+        rounds.clear();
         haveBaseline = false;
         baselineGap = 0;
         decision = ActionSet();
@@ -98,30 +112,151 @@ public:
         haveBaseline = true;
     }
 
-    // Only the first rail of a turn is kept: one number per cell of the
-    // position actually on the board. A deeper candidate scores a cell given
-    // rails that have not been placed, so its number belongs to a hypothetical
-    // board and would put several conflicting values on the same cell.
+    // Each round of the intra-turn beam becomes one heatmap. A round scores
+    // its cells against many sibling prefixes -- one per surviving line -- and
+    // only one of them can go on a heatmap, since each prefix describes a
+    // different board.
     //
-    // The same cell is still offered once per owner, and the round that opens
-    // a pass re-offers cells the previous one already scored, so the record is
-    // keyed by (cell, owner) and written once.
-    void addCandidate(const CandidateRecord &rec)
+    // Every prefix is therefore kept here, and endTurn() picks the line that
+    // actually became the turn: the heatmaps then read as the decision being
+    // made, rail by rail, rather than as branches the search abandoned.
+    void addCandidate(const CandidateRecord &rec, const vector<Coord> &prefix)
     {
-        if (!capturing || rec.prefixLen != 0)
+        if (!capturing)
             return;
-        const long long key =
-            ((long long)rec.owner << 32) | (unsigned)(rec.y * 1024 + rec.x);
-        if (!seenCandidate.insert(key).second)
-            return;
-        candidates.push_back(rec);
+
+        vector<map<vector<pair<int, int>>, BeamRound>> &byDepth =
+            pending[rec.owner];
+        if ((int)byDepth.size() <= rec.prefixLen)
+            byDepth.resize(rec.prefixLen + 1);
+
+        vector<pair<int, int>> key;
+        key.reserve(prefix.size());
+        for (const Coord &c : prefix)
+            key.push_back({c.x, c.y});
+
+        BeamRound &round = byDepth[rec.prefixLen][key];
+        if (round.candidates.empty())
+            round.prefix = prefix;
+        round.candidates.push_back(rec);
     }
+
+    // Every prefix offered at each depth, per owner, until the turn's own line
+    // is known. Dropped as soon as endTurn() has resolved the heatmaps.
+    map<int, vector<map<vector<pair<int, int>>, BeamRound>>> pending;
 
     void endTurn(const ActionSet &action, int d)
     {
         decision = action;
         disrupt = d;
+        resolveRounds();
+        pending.clear();
     }
+
+    // Walk each owner's rounds along one line and keep that line's heatmaps.
+    //
+    // Our own line is the turn that was played, so its rails are followed in
+    // order: depth 0 scores the board as it stands, depth 1 the board after
+    // the first rail was chosen, and so on. That makes the three heatmaps the
+    // decision being built rather than three unrelated branches.
+    //
+    // The opponent's turn is never printed, so their line is followed by the
+    // beam's own preference: the best prefix on offer at each depth, which is
+    // what their search would have carried forward.
+    void resolveRounds()
+    {
+        for (auto &kv : pending)
+        {
+            const int owner = kv.first;
+            const bool isMine = (owner == myId);
+            vector<BeamRound> line;
+            vector<pair<int, int>> want;
+            int prefixGap = baselineGap;
+
+            for (size_t depth = 0; depth < kv.second.size(); depth++)
+            {
+                auto &atDepth = kv.second[depth];
+                if (atDepth.empty())
+                    break;
+
+                auto it = atDepth.find(want);
+                if (it == atDepth.end())
+                {
+                    if (isMine)
+                        break; // the played line stops here
+                    it = bestPrefixAt(atDepth);
+                }
+
+                BeamRound round = move(it->second);
+                round.prefixGap = prefixGap;
+                // The next rail of the line we are following, and the score
+                // this round gave it -- the reference for the next heatmap.
+                bool haveNext = false;
+                int nx = 0, ny = 0;
+                if (isMine && depth < decision.cells.size())
+                {
+                    nx = decision.cells[depth].x;
+                    ny = decision.cells[depth].y;
+                    haveNext = true;
+                }
+                else if (!isMine)
+                {
+                    if (const CandidateRecord *c = bestRecord(round))
+                    {
+                        nx = c->x;
+                        ny = c->y;
+                        haveNext = true;
+                    }
+                }
+
+                if (haveNext)
+                {
+                    for (const CandidateRecord &c : round.candidates)
+                        if (c.x == nx && c.y == ny)
+                        {
+                            prefixGap = c.gap;
+                            break;
+                        }
+                    want.push_back({nx, ny});
+                }
+                line.push_back(move(round));
+                if (!haveNext)
+                    break;
+            }
+
+            if (!line.empty())
+                rounds[owner] = move(line);
+        }
+    }
+
+    // The prefix whose round holds the lowest gap on offer: the beam ranks
+    // lines by resultingGap, so this is the one it would keep.
+    static map<vector<pair<int, int>>, BeamRound>::iterator
+    bestPrefixAt(map<vector<pair<int, int>>, BeamRound> &atDepth)
+    {
+        auto best = atDepth.begin();
+        int bestGap = INT_MAX;
+        for (auto it = atDepth.begin(); it != atDepth.end(); ++it)
+        {
+            const CandidateRecord *c = bestRecord(it->second);
+            if (c && c->gap < bestGap)
+            {
+                bestGap = c->gap;
+                best = it;
+            }
+        }
+        return best;
+    }
+
+    static const CandidateRecord *bestRecord(const BeamRound &r)
+    {
+        const CandidateRecord *best = nullptr;
+        for (const CandidateRecord &c : r.candidates)
+            if (!best || c.gap < best->gap)
+                best = &c;
+        return best;
+    }
+
 
     void write(const string &path) const;
 };
@@ -142,12 +277,14 @@ void dbgBaseline(const vector<int> &baseline)
         g_probe->setBaseline(baseline);
 }
 
-void dbgCandidate(int owner, int prefixLen, const Coord &cand, int cost,
-                  int gap)
+void dbgCandidate(int owner, const vector<Coord> &prefix, const Coord &cand,
+                  int cost, int gap)
 {
     if (g_probe)
         g_probe->addCandidate(
-            CandidateRecord{cand.x, cand.y, cost, gap, owner, prefixLen});
+            CandidateRecord{cand.x, cand.y, cost, gap, owner,
+                            (int)prefix.size()},
+            prefix);
 }
 
 void dbgTurnEnd(const ActionSet &action, int disrupt)
@@ -260,14 +397,35 @@ void DebugProbe::write(const string &path) const
     os << "  \"baselineGap\": " << baselineGap << ",\n";
     os << "  \"inkThreshold\": " << INK_INSTABILITY_THRESHOLD << ",\n";
 
-    os << "  \"candidates\": [";
-    for (size_t i = 0; i < candidates.size(); i++)
+    // One heatmap per rail of the turn, per player: rounds[i] scores the
+    // (i+1)-th rail, given the i rails named in its `prefix`.
+    os << "  \"rounds\": [";
+    bool firstRound = true;
+    for (const auto &kv : rounds)
     {
-        const CandidateRecord &c = candidates[i];
-        os << (i ? ",\n    " : "\n    ");
-        os << "{\"x\": " << c.x << ", \"y\": " << c.y << ", \"gap\": " << c.gap
-           << ", \"cost\": " << c.cost << ", \"owner\": " << c.owner
-           << ", \"prefixLen\": " << c.prefixLen << "}";
+        const int owner = kv.first;
+        for (size_t depth = 0; depth < kv.second.size(); depth++)
+        {
+            const BeamRound &r = kv.second[depth];
+            if (r.candidates.empty())
+                continue;
+            os << (firstRound ? "\n    " : ",\n    ");
+            firstRound = false;
+            os << "{\"owner\": " << owner << ", \"depth\": " << depth
+               << ", \"prefixGap\": " << r.prefixGap << ", \"prefix\": [";
+            for (size_t i = 0; i < r.prefix.size(); i++)
+                os << (i ? ", " : "") << "{\"x\": " << r.prefix[i].x
+                   << ", \"y\": " << r.prefix[i].y << "}";
+            os << "], \"candidates\": [";
+            for (size_t i = 0; i < r.candidates.size(); i++)
+            {
+                const CandidateRecord &c = r.candidates[i];
+                os << (i ? ",\n      " : "\n      ");
+                os << "{\"x\": " << c.x << ", \"y\": " << c.y
+                   << ", \"gap\": " << c.gap << ", \"cost\": " << c.cost << "}";
+            }
+            os << "\n    ]}";
+        }
     }
     os << "\n  ],\n";
 
@@ -306,8 +464,10 @@ static void runTurn(Game &game, DebugProbe &probe, const string &outdir,
                     int turn)
 {
     probe.turn = turn;
-    game.gameTurn();
+    // Set before the turn runs: resolveRounds() fires from inside gameTurn()
+    // and has to know which of the two planning passes is ours.
     probe.myId = game.myId;
+    game.gameTurn();
     probe.myScore = game.myScore;
     probe.foeScore = game.foeScore;
 

@@ -121,7 +121,8 @@ Each time we want a A* distance, verify if a cache entry exist :
 
 ## Next steps
 
-- Créer une heuristic
+- Améliorer l'heuristic 
+    * Si moins de connection pas remplis, moins de points ou pas ???
 - partial_sort to BEAM_WIDTH instead of a full sort
 - Cache/incrementalize openGapTotal — the single highest-value change. It re-does a full multi-component flood-fill per node when consecutive nodes differ by only ~3 rails.
 <!-- - openGapTotal prends 1/2 du temps total.. Supprimer entierement et refaire le cache a* avec invalidation quand région supprimé. -->
@@ -136,10 +137,43 @@ Each time we want a A* distance, verify if a cache entry exist :
 ## Debug viewer
 
 `tools/` contient une interface qui affiche la map et les valeurs internes de
-l'algo : pour chaque case candidate du tour courant, le `resultingGap` que le
-beam interne lui a donné. `main.cpp` reste compilable et jouable seul — c'est
-`make check` qui le garantit, et le binaire de compétition est inchangé au
-bit près (les hooks sont des macros vides hors `DEBUG_TOOL`).
+l'algo : pour chaque case candidate, le `resultingGap` que le beam interne lui
+a donné. `main.cpp` reste compilable et jouable seul — c'est `make check` qui
+le garantit, et le binaire de compétition est inchangé au bit près (les hooks
+sont des macros vides hors `DEBUG_TOOL`).
+
+### Les 3 heatmaps d'un tour
+
+Le beam interne choisit les 3 rails d'un tour un par un : un round par rail.
+Chaque round est capturé séparément, donc un tour porte jusqu'à **3 heatmaps** —
+sélectionnables dans le panneau « Rail du tour » (ou touches <kbd>1</kbd>–<kbd>3</kbd>).
+
+Un round score ses cases contre un plateau qui inclut déjà les rails posés par
+les rounds précédents. Chaque heatmap affiche donc son propre **gap de départ**
+(`prefixGap`), et les gains se lisent « ce que ce rail ajoute au précédent »,
+pas « par rapport au plateau vierge ». Les coups déjà appliqués (0, 1 ou 2)
+sont remplis et numérotés sur la carte.
+
+Deux cases seulement sont entourées, celles qui posent la question — et leur
+couleur est la réponse :
+
+- **anneau blanc unique** : le rail choisi *est* la meilleure case. Rien à
+  expliquer.
+- **vert + rouge** : ils divergent. Vert sur le gain maximum (repère en haut à
+  gauche), rouge sur le rail réellement choisi (repère en bas à droite).
+
+En vue adversaire il n'y a que l'anneau vert : son coup n'est jamais imprimé.
+Sur la partie rejouée, 78 rounds sur 91 divergent et 13 concordent — c'est cet
+écart que l'outil sert à regarder.
+
+Le rouge tire vers l'orange à dessein : un rouge pur se confondrait avec les
+rails du joueur et avec le haut du gradient rose-rouge.
+
+Un round garde 40 lignes survivantes, donc il score ses cases contre beaucoup
+de préfixes différents — un seul peut tenir sur une carte. Pour nous, c'est la
+lignée qui a *réellement* été jouée qui est suivie (les préfixes correspondent
+exactement aux premiers coups de la décision) ; pour l'adversaire, dont le coup
+n'est jamais imprimé, c'est la meilleure ligne à chaque profondeur.
 
 ```sh
 make replay LOG=.colosseum/logs/firstenv/run-*/game_*_p0.events.jsonl

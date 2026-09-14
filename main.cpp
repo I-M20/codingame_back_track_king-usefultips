@@ -172,19 +172,19 @@ class ActionSet;
 
 // Defined in tools/debug_tool.cpp.
 void dbgTurnBegin(const Map &board, const vector<pair<int, int>> &wishes);
-void dbgCandidate(int owner, int prefixLen, const Coord &cand, int cost,
-                  int gap);
+void dbgCandidate(int owner, const vector<Coord> &prefix, const Coord &cand,
+                  int cost, int gap);
 void dbgTurnEnd(const ActionSet &action, int disrupt);
 void dbgBaseline(const vector<int> &baseline);
 
 #define DBG_TURN_BEGIN(board, wishes) dbgTurnBegin(board, wishes)
-#define DBG_CANDIDATE(owner, prefixLen, cand, cost, gap) \
-    dbgCandidate(owner, prefixLen, cand, cost, gap)
+#define DBG_CANDIDATE(owner, prefix, cand, cost, gap) \
+    dbgCandidate(owner, prefix, cand, cost, gap)
 #define DBG_TURN_END(action, disrupt) dbgTurnEnd(action, disrupt)
 #define DBG_BASELINE(baseline) dbgBaseline(baseline)
 #else
 #define DBG_TURN_BEGIN(board, wishes) ((void)0)
-#define DBG_CANDIDATE(owner, prefixLen, cand, cost, gap) ((void)0)
+#define DBG_CANDIDATE(owner, prefix, cand, cost, gap) ((void)0)
 #define DBG_TURN_END(action, disrupt) ((void)0)
 #define DBG_BASELINE(baseline) ((void)0)
 #endif
@@ -1626,7 +1626,7 @@ public:
                     child.action.resultingGap =
                         extendManhattanGap(geo, c, child.bestPerWish);
 
-                    DBG_CANDIDATE(owner, (int)line.action.cells.size(), c, cost,
+                    DBG_CANDIDATE(owner, line.action.cells, c, cost,
                                   child.action.resultingGap);
 
                     grown.push_back(move(child));
