@@ -23,8 +23,9 @@
 // ====================
 // CAPTURE
 
-// One candidate cell as the intra-turn beam scored it: `gap` is the
-// resultingGap extendManhattanGap() gave the line ending on this cell.
+// One candidate cell as the intra-turn beam scored it: `gap` is the closedGap
+// extendManhattanGap() gave the line ending on this cell -- cells of straight-
+// line distance closed, so higher is better.
 struct CandidateRecord
 {
     int x, y;
@@ -46,6 +47,9 @@ struct CandidateRecord
 struct BeamRound
 {
     vector<Coord> prefix;
+    // Gap `prefix` had already closed before this round's cell, so a
+    // candidate's marginal contribution is its `gap` minus this. Zero on the
+    // first round, where nothing has been laid yet.
     int prefixGap = 0;
     vector<CandidateRecord> candidates;
 };
@@ -171,7 +175,8 @@ public:
             const bool isMine = (owner == myId);
             vector<BeamRound> line;
             vector<pair<int, int>> want;
-            int prefixGap = baselineGap;
+            // A line that has laid nothing has closed nothing.
+            int prefixGap = 0;
 
             for (size_t depth = 0; depth < kv.second.size(); depth++)
             {
@@ -229,17 +234,17 @@ public:
         }
     }
 
-    // The prefix whose round holds the lowest gap on offer: the beam ranks
-    // lines by resultingGap, so this is the one it would keep.
+    // The prefix whose round holds the highest gap closed on offer: the beam
+    // ranks lines by closedGap, so this is the one it would keep.
     static map<vector<pair<int, int>>, BeamRound>::iterator
     bestPrefixAt(map<vector<pair<int, int>>, BeamRound> &atDepth)
     {
         auto best = atDepth.begin();
-        int bestGap = INT_MAX;
+        int bestGap = INT_MIN;
         for (auto it = atDepth.begin(); it != atDepth.end(); ++it)
         {
             const CandidateRecord *c = bestRecord(it->second);
-            if (c && c->gap < bestGap)
+            if (c && c->gap > bestGap)
             {
                 bestGap = c->gap;
                 best = it;
@@ -252,7 +257,7 @@ public:
     {
         const CandidateRecord *best = nullptr;
         for (const CandidateRecord &c : r.candidates)
-            if (!best || c.gap < best->gap)
+            if (!best || c.gap > best->gap)
                 best = &c;
         return best;
     }

@@ -119,26 +119,43 @@ Each time we want a A* distance, verify if a cache entry exist :
     - Else, compute A* distance, save in cache with inkedRegion count
 - If not, compute A* distance, save in cache with inkedRegion count
 
+### Pre-heuristic (`extendManhattanGap`)
+
+Le beam interne classe ses candidats avec un terme très rapide, sans BFS ni
+flood fill. Deux moitiés, additionnées :
+
+1. **Gaps à fermer** — pour chaque wish pas encore connecté, la marche
+   `villeA -> rail -> villeB`, pondérée en `1/baseline²` pour privilégier les
+   wishes courts (seuls ceux-là sont finissables en 3 rails, et seule une
+   connection finie rapporte). Seuls les deux meilleurs wishes comptent ; un
+   wish déjà ponté est mis de côté à sa valeur pleine pour ne pas bloquer un
+   slot et aplatir le score des rails suivants.
+
+2. **Chemins qui paient** — une connection active rapporte 1 point par rail
+   possédé sur son chemin, *chaque tour*. Les chemins actifs sont tamponnés une
+   fois par appel (`payOwner`), puis chaque candidat coûte 4 lectures de
+   tableau : un rail adjacent à un chemin qui paie vaut +1, +2 si l'adversaire
+   possède cette case (le tie-break N/E/S/O déterministe permet de détourner le
+   chemin et de lui prendre le point plutôt que d'en ajouter un).
+
+La moitié 2 est ce qui empêche le terme d'être aveugle quand tous les wishes
+sont connectés — l'état dans lequel se passe ~75% d'une partie.
+
 ## Next steps
 
-- Améliorer l'heuristic 
-    * Si moins de connection pas remplis, moins de points ou pas ???
+- Refaire entierement l'heuristic du beam interne
 - partial_sort to BEAM_WIDTH instead of a full sort
 - Cache/incrementalize openGapTotal — the single highest-value change. It re-does a full multi-component flood-fill per node when consecutive nodes differ by only ~3 rails.
 <!-- - openGapTotal prends 1/2 du temps total.. Supprimer entierement et refaire le cache a* avec invalidation quand région supprimé. -->
 <!-- - Lister les endroits ou on fait des floodfill/a* et mettre en cache tout ça -->
-- Ne pas créer des moves uniquement sur les groupe de rails des villes pas encore lié :
-    - Creer des moves sur les fin de chemin vers le rail le plus proche qui n'est pas du même groupe 
-
-- Il faut qu'un choix de placement soit un ensemble de 3 rails et pas juste une src/dst
-    - Des fois on veut 1 ou 2 rails sur la tache principale, et commencer immédiatement une autre tache
-    -> Une depth de beam devrait être 1 rail
 
 ## Debug viewer
 
 `tools/` contient une interface qui affiche la map et les valeurs internes de
-l'algo : pour chaque case candidate, le `resultingGap` que le beam interne lui
-a donné. `main.cpp` reste compilable et jouable seul — c'est `make check` qui
+l'algo : pour chaque case candidate, le `closedGap` que le beam interne lui a
+donné — à quel point la ligne sert les deux wishes qu'elle sert le mieux,
+pondéré vers les wishes courts, donc plus c'est haut mieux c'est. Une heatmap
+uniforme veut dire que tous les wishes sont déjà connectés. `main.cpp` reste compilable et jouable seul — c'est `make check` qui
 le garantit, et le binaire de compétition est inchangé au bit près (les hooks
 sont des macros vides hors `DEBUG_TOOL`).
 
@@ -149,10 +166,10 @@ Chaque round est capturé séparément, donc un tour porte jusqu'à **3 heatmaps
 sélectionnables dans le panneau « Rail du tour » (ou touches <kbd>1</kbd>–<kbd>3</kbd>).
 
 Un round score ses cases contre un plateau qui inclut déjà les rails posés par
-les rounds précédents. Chaque heatmap affiche donc son propre **gap de départ**
-(`prefixGap`), et les gains se lisent « ce que ce rail ajoute au précédent »,
-pas « par rapport au plateau vierge ». Les coups déjà appliqués (0, 1 ou 2)
-sont remplis et numérotés sur la carte.
+les rounds précédents. Chaque heatmap affiche donc ce que son préfixe a **déjà
+fermé** (`prefixGap`, nul sur le premier rail), et les gains se lisent « ce que
+ce rail ajoute au précédent », pas « par rapport au plateau vierge ». Les coups
+déjà appliqués (0, 1 ou 2) sont remplis et numérotés sur la carte.
 
 Deux cases seulement sont entourées, celles qui posent la question — et leur
 couleur est la réponse :

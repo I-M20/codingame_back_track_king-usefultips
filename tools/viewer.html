@@ -448,7 +448,7 @@
     </section>
 
     <section>
-      <h2>Gain — baseline moins gap</h2>
+      <h2>Gain — score ajouté par la case</h2>
       <div class="ramp" id="ramp"></div>
       <div class="ramp-ends"><span id="rampLo">0</span><span id="rampHi">0</span></div>
     </section>
@@ -580,14 +580,16 @@ function roundsFor(d) {
 
 // One number per cell for the selected round: the gap that round gave a rail
 // laid there, as the gain over the board the round started from -- the board
-// after its prefix was placed, not the untouched one. Higher is better.
+// after its prefix was placed, not the untouched one. `c.gap` is cumulative
+// gap closed by the whole line, so the prefix's own share comes back off.
+// Higher is better.
 function candidateMap(d) {
   const rounds = roundsFor(d);
   const round = rounds[Math.min(state.depth, rounds.length - 1)];
   const byCell = new Map();
   let lo = Infinity, hi = -Infinity;
   for (const c of round?.candidates ?? []) {
-    const gain = round.prefixGap - c.gap;
+    const gain = c.gap - round.prefixGap;
     byCell.set(c.y * 1000 + c.x, { ...c, gain });
     if (gain < lo) lo = gain;
     if (gain > hi) hi = gain;
@@ -913,9 +915,10 @@ function drawSidebar(d, byCell, lo, hi, stops, round, rounds) {
     ["mes rails", mineRails],
     ["rails adv.", foeRails],
     ["wishes", d.wishes.length],
-    // The board this heatmap measures against: the untouched board on the
-    // first rail, the board after the prefix on the others.
-    ["gap de départ", round ? round.prefixGap : d.baselineGap],
+    ["gap total (info)", d.baselineGap],
+    // The score the prefix this heatmap sits on already reached: zero on the
+    // first rail, since nothing has been laid yet.
+    ["score du prefix", round ? round.prefixGap : 0],
     ["candidats", byCell.size],
     ["régions inked", `${inkedCount} / ${d.regionInfo.length}`],
     ["instables", unstable.length],
@@ -1052,8 +1055,8 @@ cv.addEventListener("mousemove", (ev) => {
     lines.push(`rail    ${ownerName}`);
   }
 
-  const from = round ? round.prefixGap : d.baselineGap;
-  lines.push(c ? `gap     ${c.gap}  (départ ${from})` : `gap     —`);
+  const from = round ? round.prefixGap : 0;
+  lines.push(c ? `score   ${c.gap}  (prefix ${from})` : `score   —`);
   lines.push(c ? `gain    ${c.gain}   coût ${c.cost}` : `non candidat`);
 
   tip.textContent = lines.join("\n");

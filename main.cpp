@@ -1,4 +1,4 @@
-// v2.2
+// v2.3
 
 // Nested beam searches: an outer one plans turns ahead, and for each of its
 // nodes an inner one decides that turn's rails one cell at a time. Both are
@@ -1115,10 +1115,10 @@ public:
     vector<Coord> cells;
     // Paint spent by `cells`, i.e. the sum of their terrain costs.
     int cost = 0;
-    // Gap left across every open wish once these cells are laid. This is how
-    // turn plans are ranked against each other, both inside the turn and when
-    // the branching cap has to drop some.
-    int resultingGap = INT_MAX;
+    // How well these rails serve the two wishes they serve best, higher
+    // better. A ratio, not a cell count, so a board with few open wishes does
+    // not outrank a busy one. See extendManhattanGap.
+    int closedGap = 0;
 
     bool empty() const { return cells.empty(); }
 };
@@ -1137,8 +1137,9 @@ class PlacementLine
 public:
     ActionSet action;
     int paintLeft = PAINT_PER_TURN;
-    // Closest this line's rails have come to each open wish so far, so a
-    // child only has to fold in the one cell it adds.
+    // Closest this line has come to each open wish's towns, so a child folds
+    // in only the cell it adds: the town-A approaches, then the town-B ones,
+    // then one slot for the running paying-path total.
     vector<int> bestPerWish;
 };
 
@@ -1414,77 +1415,172 @@ public:
 
     // ---- turn planning ----
 
-    // The wishes one planning call can act on, resolved to coordinates up
-    // front. Purely a cache: every field is derivable from `wishes` plus the
-    // board, and it exists only because the alternative is two std::map
-    // lookups per wish per candidate on the hottest path in the search.
-    //
-    // It also fixes the indexing. Towns that no longer exist are dropped here
-    // once, so `townA[i]`, `townB[i]` and a line's `bestPerWish[i]` all agree
-    // on what `i` means; walking `wishes` directly would have to re-skip those
-    // entries and the indices would drift.
+    // A planning call's wishes, resolved to coordinates once. Purely a cache,
+    // and it fixes the indexing: missing towns are dropped here so `townA[i]`,
+    // `townB[i]` and a line's `bestPerWish[i]` all agree on what `i` means.
     class WishGeometry
     {
     public:
         vector<Coord> townA, townB;
-        // Straight-line distance of each wish with nothing built: the value a
-        // line's per-wish best starts at.
+        // Straight-line length of each open wish, and SCORE_SCALE / that.
         vector<int> baseline;
+        vector<int> weight;
+
+        // Owner of each cell on a connection that already pays, PAY_NONE
+        // elsewhere. Only the already-connected wishes land here.
+        static constexpr int PAY_NONE = -2;
+        vector<int> payOwner;
+        int width = 0;
+
+        bool hasPayMap() const { return !payOwner.empty(); }
+        int payAt(int x, int y) const { return payOwner[(size_t)y * width + x]; }
     };
 
+    // Fixed-point unit: the wish score is a ratio of two board distances and
+    // would collapse to zero in integers without it.
+    static const int SCORE_SCALE = 1 << 20;
+
+    // The referee names a connection in whichever direction it found it, so
+    // both orderings are tried.
+    static bool isActiveWish(const map<pair<int, int>, bool> &active,
+                             const pair<int, int> &wish)
+    {
+        return active.count(wish) != 0 ||
+               active.count({wish.second, wish.first}) != 0;
+    }
+
     static WishGeometry wishGeometry(const Map &board,
-                                     const vector<pair<int, int>> &wishes)
+                                     const vector<pair<int, int>> &wishes,
+                                     const map<pair<int, int>, bool> &active)
     {
         WishGeometry geo;
+        geo.width = board.width();
+
+        vector<Coord> path;
         for (const auto &wish : wishes)
         {
             if (!board.hasTown(wish.first) || !board.hasTown(wish.second))
                 continue;
             Coord ta = board.townCoordOf(wish.first);
             Coord tb = board.townCoordOf(wish.second);
+
+            // Already connected: this turn cannot make it any more connected,
+            // but it pays every turn, so its route is recorded instead.
+            if (isActiveWish(active, wish))
+            {
+                board.connectionPathInto(ta, tb, path);
+                if (path.empty())
+                    continue;
+                if (geo.payOwner.empty())
+                    geo.payOwner.assign((size_t)board.width() * board.height(),
+                                        WishGeometry::PAY_NONE);
+                for (const Coord &c : path)
+                    geo.payOwner[(size_t)c.y * geo.width + c.x] =
+                        board.tileOwner(c.x, c.y);
+                continue;
+            }
+
+            const int d = abs(ta.x - tb.x) + abs(ta.y - tb.y);
+            // Two towns on the same cell are already connected, and would
+            // divide by zero below.
+            if (d == 0)
+                continue;
             geo.townA.push_back(ta);
             geo.townB.push_back(tb);
-            geo.baseline.push_back(abs(ta.x - tb.x) + abs(ta.y - tb.y));
+            geo.baseline.push_back(d);
+            geo.weight.push_back(SCORE_SCALE / d);
         }
         return geo;
     }
 
-    // Straight-line stand-in for the real gap, used to rank turns while they
-    // are still being built: for each open wish, the shortest Manhattan
-    // distance from either of its towns to a cell the line has laid this
-    // turn. No rail groups and no flood fill.
-    //
-    // It is deliberately not the true gap — it cannot see whether a rail
-    // actually joins anything. That accuracy is not worth its price here,
-    // because every surviving line is rescored with the real heuristic once
-    // the turn is played, and a line that only looked good under this
-    // approximation is discarded there.
-    //
-    // Folds one newly laid cell into a line's per-wish bests and returns the
-    // new total. A child differs from its parent by exactly one cell, so the
-    // whole score is never recomputed: each candidate costs one pass over the
-    // wishes rather than one pass over wishes times cells laid.
-    static int extendManhattanGap(const WishGeometry &geo, Coord laid,
-                                  vector<int> &bestPerWish)
+    // What a point of per-turn income is worth against a cell of gap.
+    static const int PAY_WEIGHT = SCORE_SCALE / 4;
+
+    // Rewards joining a connection that already pays -- all this term has to
+    // go on once every wish is connected. A rail beside a paying path scores
+    // 1, or 2 on a foe cell: rerouting moves a point rather than adding one.
+    static int payScore(const WishGeometry &geo, Coord laid, int foe)
     {
-        int total = 0;
-        for (size_t i = 0; i < geo.baseline.size(); i++)
+        if (!geo.hasPayMap())
+            return 0;
+
+        const int W = geo.width;
+        const int H = (int)(geo.payOwner.size() / (size_t)W);
+
+        int score = 0;
+        for (int k = 0; k < 4; k++)
+        {
+            const int nx = laid.x + DIR_X[k], ny = laid.y + DIR_Y[k];
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H)
+                continue;
+            const int on = geo.payAt(nx, ny);
+            if (on == WishGeometry::PAY_NONE)
+                continue;
+            // Taking a cell off the opponent moves a point rather than just
+            // adding one, so it counts double.
+            score += (on == foe) ? 2 : 1;
+        }
+        return score * PAY_WEIGHT;
+    }
+
+    // Ranks a line by its two best open wishes, each scored
+    // SCORE_SCALE / (walk * baseline) -- straightness, over baseline^2 to
+    // favour the short wishes a turn can finish. Higher is better.
+    static int extendManhattanGap(const WishGeometry &geo, Coord laid,
+                                  int foe, vector<int> &bestPerWish)
+    {
+        const size_t n = geo.baseline.size();
+
+        // Accumulated, not recomputed from the newest cell: scoring only the
+        // last rail would make a three-rail line look no better than a
+        // one-rail one and leave paint unspent.
+        int &payTotal = bestPerWish[2 * n];
+        payTotal += payScore(geo, laid, foe);
+
+        int banked = payTotal;
+        int best = 0, second = 0;
+        for (size_t i = 0; i < n; i++)
         {
             int da = abs(laid.x - geo.townA[i].x) + abs(laid.y - geo.townA[i].y);
             int db = abs(laid.x - geo.townB[i].x) + abs(laid.y - geo.townB[i].y);
-            bestPerWish[i] = min(bestPerWish[i], max(da, db));
-            total += bestPerWish[i];
+
+            // Each town's own nearest rail, tracked apart so a line extending
+            // towards one of them keeps improving. Sharing one rail saturates.
+            int &nearA = bestPerWish[i];
+            int &nearB = bestPerWish[n + i];
+            nearA = min(nearA, da);
+            nearB = min(nearB, db);
+
+            const int walk = nearA + nearB;
+
+            // Bridged (a rail beside each town), so at its ceiling: bank it
+            // and free the slot, or it would flatten the turn's later rails.
+            // Rails either side of a hole also walk 2 -- the real heuristic
+            // catches that once the turn is played.
+            if (walk <= 2)
+            {
+                banked += geo.weight[i];
+                continue;
+            }
+
+            const int score = geo.weight[i] / walk;
+            if (score > best)
+            {
+                second = best;
+                best = score;
+            }
+            else if (score > second)
+                second = score;
         }
-        return total;
+        // With no open wish this is payScore alone -- the only term left on a
+        // board where every gap is closed.
+        return banked + best + second;
     }
 
-    // Ranks two turn plans: the one that leaves the least gap wins, and among
-    // plans that leave the same gap, the one that spent more paint — unspent
-    // paint is simply lost at the end of the turn.
     static bool betterPlacement(const ActionSet &a, const ActionSet &b)
     {
-        if (a.resultingGap != b.resultingGap)
-            return a.resultingGap < b.resultingGap;
+        if (a.closedGap != b.closedGap)
+            return a.closedGap > b.closedGap;
         return a.cost > b.cost;
     }
 
@@ -1535,6 +1631,7 @@ public:
     // just one with paint left over. `statesSeen` counts states built.
     vector<ActionSet> generateActionSets(const Map &startBoard,
                                          const vector<pair<int, int>> &wishes,
+                                         const map<pair<int, int>, bool> &active,
                                          int owner, int keep, int &statesSeen)
     {
         // PROFILE(generateActionSets);
@@ -1542,8 +1639,12 @@ public:
         vector<ActionSet> finished;
         bool aborted = false;
 
+        // Whoever is not planning this turn. The planner runs for both
+        // players, so it cannot just read myId/foeId.
+        const int rival = (owner == myId) ? foeId : myId;
+
         // Resolved once so scoring never goes back to the town map.
-        const WishGeometry geo = wishGeometry(startBoard, wishes);
+        const WishGeometry geo = wishGeometry(startBoard, wishes, active);
 
         DBG_BASELINE(geo.baseline);
 
@@ -1577,7 +1678,9 @@ public:
 
         vector<PlacementLine> lines(1);
         lines[0].paintLeft = PAINT_PER_TURN;
-        lines[0].bestPerWish = geo.baseline;
+        // Nothing approached yet; the trailing pay slot starts at zero.
+        lines[0].bestPerWish.assign(geo.baseline.size() * 2 + 1, INT_MAX);
+        lines[0].bestPerWish.back() = 0;
 
         vector<PlacementLine> grown;
 
@@ -1623,11 +1726,11 @@ public:
                     child.action.cost += cost;
 
                     child.bestPerWish = line.bestPerWish;
-                    child.action.resultingGap =
-                        extendManhattanGap(geo, c, child.bestPerWish);
+                    child.action.closedGap =
+                        extendManhattanGap(geo, c, rival, child.bestPerWish);
 
                     DBG_CANDIDATE(owner, line.action.cells, c, cost,
-                                  child.action.resultingGap);
+                                  child.action.closedGap);
 
                     grown.push_back(move(child));
                 }
@@ -1780,11 +1883,19 @@ public:
     // Interruptible: an unmeasured wish pays nobody. That loses income on
     // both sides of the same subtraction, so the comparison between the two
     // players stays roughly fair even on a turn that ran out of clock.
+    //
+    // `outActive` is rebuilt here rather than in a pass of its own: deciding
+    // whether a wish pays is exactly deciding whether it is connected, so the
+    // walk below already has the answer. At depth 0 the referee's own list is
+    // used instead; from there on this is what keeps it current, since a rail
+    // laid this turn can complete a connection and an ink can break one.
     void turnIncome(Map &board, const vector<pair<int, int>> &wishes,
-                    int selfId, int otherId, int &outSelf, int &outOther) const
+                    int selfId, int otherId, int &outSelf, int &outOther,
+                    map<pair<int, int>, bool> &outActive) const
     {
         outSelf = 0;
         outOther = 0;
+        outActive.clear();
 
         for (const auto &wish : wishes)
         {
@@ -1794,6 +1905,8 @@ public:
             vector<Coord> path = board.connectionPath(board.townCoordOf(a), board.townCoordOf(b));
             if (path.empty())
                 continue;
+
+            outActive[wish] = true;
 
             for (const Coord &c : path)
             {
@@ -2081,7 +2194,8 @@ public:
         // Last, because inking above can erase rails and a rail erased this
         // turn must not be paid for it.
         int gainSelf = 0, gainOther = 0;
-        turnIncome(board, wishes, selfId, otherId, gainSelf, gainOther);
+        turnIncome(board, wishes, selfId, otherId, gainSelf, gainOther,
+                   child.active);
 
         child.bankedSelf = parent.bankedSelf + gainSelf;
         child.bankedOther = parent.bankedOther + gainOther;
@@ -2156,14 +2270,14 @@ public:
                 // not get to pick from several after seeing ours.
                 int placementStates = 0;
                 vector<ActionSet> foeTurns =
-                    generateActionSets(node.state, wishes, foeId,
+                    generateActionSets(node.state, wishes, node.active, foeId,
                                        NESTED_BEAM_WIDTH, placementStates);
                 vector<Coord> foeRails;
                 if (!foeTurns.empty())
                     foeRails = foeTurns.front().cells;
 
                 vector<ActionSet> myTurns =
-                    generateActionSets(node.state, wishes, myId,
+                    generateActionSets(node.state, wishes, node.active, myId,
                                        NESTED_BEAM_WIDTH, placementStates);
                 stats.actionsCreated[depth] += (int)myTurns.size();
                 stats.placementStates[depth] += placementStates;
@@ -2191,7 +2305,8 @@ public:
                     {
                         // PROFILE(stateCopy);
                         child.state = node.state;
-                        child.active = node.active;
+                        // child.active is not copied: simulateTurn rebuilds it
+                        // from the board this turn actually produces.
                     }
 
                     // The plan already names its cells: no replanning, so the
