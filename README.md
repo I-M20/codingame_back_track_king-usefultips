@@ -121,10 +121,7 @@ Each time we want a A* distance, verify if a cache entry exist :
 
 ## Next steps
 
-- But many games are lost because of infinite WAIT action trhown each turn...
 - Créer une heuristic
-- Timeout quand map pleine ?
-- Timeout quand une town est isolé ?
 - partial_sort to BEAM_WIDTH instead of a full sort
 - Cache/incrementalize openGapTotal — the single highest-value change. It re-does a full multi-component flood-fill per node when consecutive nodes differ by only ~3 rails.
 <!-- - openGapTotal prends 1/2 du temps total.. Supprimer entierement et refaire le cache a* avec invalidation quand région supprimé. -->
@@ -136,6 +133,80 @@ Each time we want a A* distance, verify if a cache entry exist :
     - Des fois on veut 1 ou 2 rails sur la tache principale, et commencer immédiatement une autre tache
     -> Une depth de beam devrait être 1 rail
 
+## Debug viewer
+
+`tools/` contient une interface qui affiche la map et les valeurs internes de
+l'algo : pour chaque case candidate du tour courant, le `resultingGap` que le
+beam interne lui a donné. `main.cpp` reste compilable et jouable seul — c'est
+`make check` qui le garantit, et le binaire de compétition est inchangé au
+bit près (les hooks sont des macros vides hors `DEBUG_TOOL`).
+
+```sh
+make debug                                          # construit tools/btk-debug
+./tools/btk-debug replay <events.jsonl> tools/dumps 20   # rejoue 20 tours
+make viewer                                         # http://localhost:8000
+```
+
+Sous WSL, un navigateur Windows n'atteint pas le `localhost` de la distro :
+`serve.py` affiche au démarrage la seconde adresse (`http://172.x.x.x:8000/`)
+qui, elle, fonctionne depuis Chrome. Le terminal intégré de VSCode redirige le
+port tout seul, d'où `localhost` qui y marche.
+
+### Images de tuiles (optionnel)
+
+Déposer des PNG carrés dans `tools/tiles/` remplace les cases de couleur :
+
+| fichier | remplace |
+|---|---|
+| `plains.png` `river.png` `mountain.png` | le terrain |
+| `town.png` | les villes (l'id reste écrit par-dessus) |
+| `inked.png` | les régions encrées |
+| `rail_me.png` `rail_foe.png` `rail_neutral.png` | les pastilles de rail |
+
+Tout est facultatif et indépendant : un fichier manquant retombe sur sa
+couleur, donc un jeu partiel fonctionne. Les images n'ont pas besoin d'être
+à la même taille — chacune est redimensionnée à la case (30 px). La couleur
+du terrain est peinte dessous, donc une image à fond transparent se pose sur
+sa teinte plutôt que sur du vide. Dès qu'une image est présente, la heatmap
+passe en translucide (0.65) pour la laisser voir, et les chiffres prennent un
+contour noir pour rester lisibles sur n'importe quel fond.
+
+`tools/tiles/` est dans `.gitignore` — retirer la ligne pour versionner tes
+images.
+
+### Fichiers
+
+- `tools/debug_tool.cpp` — `#include "../main.cpp"`, donc c'est le vrai moteur
+  qui est observé, jamais une réimplémentation.
+- `tools/serve.py` — sert le viewer et les dumps (stdlib seule).
+- `tools/viewer.html` — Canvas : terrain, régions, rails, villes, encre, et la
+  heatmap des candidats. La case jouée est entourée ; le panneau latéral
+  compare le gain maximum au rail effectivement posé.
+
+Mode live : `./tools/btk-debug live tools/dumps` se comporte comme le bot
+(stdin/stdout) et dépose un dump par tour à côté. Utilisable directement comme
+bot dans `colosseum.toml`, avec le bouton *Live* du viewer pour suivre.
+
+L'outil garde le budget de `main.cpp` (30 ms, 900 au premier tour) : les
+valeurs affichées sont celles que le bot jouera vraiment sur CodinGame.
+
+Un replay reproduit le match de près, mais pas à l'identique, et la raison
+tient au bot lui-même : **la recherche s'arrête sur l'horloge, pas sur un
+nombre d'itérations, donc elle n'est pas déterministe**. Rejouer cinq fois le
+même tour avec le même binaire sur la même entrée donne des sorties
+différentes — le beam tronque à un point qui suit les micro-variations de
+charge de la machine.
+
+Mesuré sur un log v2.2 de 25 tours : 17 tours rejouent la sortie exacte, 3
+posent les mêmes cases dans un autre ordre (sans conséquence pour l'arbitre),
+5 diffèrent. Sur le premier rail — celui que la heatmap explique — 22 tours
+sur 25 coïncident : la divergence porte presque toujours sur le 2ᵉ ou 3ᵉ rail.
+
+Conséquence pratique : un dump décrit fidèlement *une* exécution de la
+recherche à 30 ms, ce qui est bien ce qu'on veut inspecter, mais deux dumps du
+même tour peuvent différer. Les valeurs de la heatmap, elles, sont stables :
+`extendManhattanGap` ne dépend pas du temps.
+
 ## Explanations
 
 ## Versions
@@ -145,14 +216,14 @@ Each time we want a A* distance, verify if a cache entry exist :
 Infinite 'WAIT' turns bug resolved by finding the best non empty action when first beam depth is broken
 
 Last moment in arena: -
-First moment in arena: 
+First moment in arena: 676/1320 overall & Bronze league
 
 ### v2.1
 
 Reduce time budget from 45ms to 30ms : No remaining timeouts
 But many games are lost because of infinite WAIT action trhown each turn...
 
-Last moment in arena: 707/1316 overall & Bronze league
+Last moment in arena: 708/1316 overall & Bronze league
 First moment in arena: 100/400 Bronze
 
 ### v2.0

@@ -134,8 +134,12 @@ static const int PAINT_PER_TURN = 3;
 // (1000 ms on the first). The deadline is only tested between expansions, so
 // the budget stays well under the limit to absorb one in-flight expansion
 // plus the final replay and output.
+#ifndef TURN_BUDGET_MS
 static const int TURN_BUDGET_MS = 30;
+#endif
+#ifndef FIRST_TURN_BUDGET_MS
 static const int FIRST_TURN_BUDGET_MS = 900;
+#endif
 
 // Owner marker for a tile carrying no rail.
 static const int NO_OWNER = -1;
@@ -152,6 +156,38 @@ static const int INK_INSTABILITY_THRESHOLD = 4;
 // tie-breaking and for choosing which neighbour a rail advances to.
 static const int DIR_X[4] = {0, 1, 0, -1};
 static const int DIR_Y[4] = {-1, 0, 1, 0};
+
+// ====================
+// DEBUG HOOKS
+//
+// Observation points for the external viewer (tools/debug_tool.cpp). They are
+// pure observation: the tool watches the search, it never steers it. Defined
+// only when DEBUG_TOOL is set, and the call sites expand to nothing otherwise,
+// so the competition build carries no hook, no branch and no symbol.
+
+#ifdef DEBUG_TOOL
+class Map;
+class Coord;
+class ActionSet;
+
+// Defined in tools/debug_tool.cpp.
+void dbgTurnBegin(const Map &board, const vector<pair<int, int>> &wishes);
+void dbgCandidate(int owner, int prefixLen, const Coord &cand, int cost,
+                  int gap);
+void dbgTurnEnd(const ActionSet &action, int disrupt);
+void dbgBaseline(const vector<int> &baseline);
+
+#define DBG_TURN_BEGIN(board, wishes) dbgTurnBegin(board, wishes)
+#define DBG_CANDIDATE(owner, prefixLen, cand, cost, gap) \
+    dbgCandidate(owner, prefixLen, cand, cost, gap)
+#define DBG_TURN_END(action, disrupt) dbgTurnEnd(action, disrupt)
+#define DBG_BASELINE(baseline) dbgBaseline(baseline)
+#else
+#define DBG_TURN_BEGIN(board, wishes) ((void)0)
+#define DBG_CANDIDATE(owner, prefixLen, cand, cost, gap) ((void)0)
+#define DBG_TURN_END(action, disrupt) ((void)0)
+#define DBG_BASELINE(baseline) ((void)0)
+#endif
 
 // ====================
 // STRUCTURES
@@ -624,7 +660,9 @@ public:
         return *this;
     }
 
-private:
+    // Public so the external debug viewer (tools/debug_tool.cpp) can serialise
+    // a board directly. Nothing in the search relies on the distinction.
+public:
     Grid grid;
     vector<Town> towns;
     unordered_map<int, Region> regionById;
@@ -1507,6 +1545,8 @@ public:
         // Resolved once so scoring never goes back to the town map.
         const WishGeometry geo = wishGeometry(startBoard, wishes);
 
+        DBG_BASELINE(geo.baseline);
+
         // One board for the whole planning, mutated in place. A line's rails
         // are laid before it is worked on and undone straight after, so every
         // line sees the same starting position without anyone copying a grid.
@@ -1585,6 +1625,9 @@ public:
                     child.bestPerWish = line.bestPerWish;
                     child.action.resultingGap =
                         extendManhattanGap(geo, c, child.bestPerWish);
+
+                    DBG_CANDIDATE(owner, (int)line.action.cells.size(), c, cost,
+                                  child.action.resultingGap);
 
                     grown.push_back(move(child));
                 }
@@ -2056,6 +2099,8 @@ public:
         outDisrupt = -1;
         stats.reset();
 
+        DBG_TURN_BEGIN(*startBoard, wishes);
+
         // The deadline is set before anything else, because everything else
         // -- the root's own scoring included -- now tests it. Leaving it at
         // the previous turn's value would make the whole turn read as already
@@ -2271,6 +2316,8 @@ public:
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         now - deadline).count();
         }
+
+        DBG_TURN_END(outAction, outDisrupt);
     }
 };
 
@@ -2378,6 +2425,9 @@ void mainLoopturn(Game &game)
     game.gameTurn();
 }
 
+// The debug tool includes this file to drive the very same engine, and brings
+// its own entry point.
+#ifndef DEBUG_TOOL
 int main()
 {
     Game game;
@@ -2411,3 +2461,4 @@ int main()
         // PRINT_PROFILE(sortBeam);
     }
 }
+#endif // !DEBUG_TOOL

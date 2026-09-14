@@ -1,0 +1,919 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Back Track King Inspector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  :root {
+    --ink:        #11161b;
+    --ink-soft:   #5a656e;
+    --ink-faint:  #8a949c;
+    --paper:      #f4f5f2;
+    --panel:      #ffffff;
+    --rule:       #d9dcd6;
+    --rule-soft:  #e8eae5;
+    /* Region borders sit on the board, not in the UI: they need to hold
+       against terrain artwork and the heatmap, so they are far darker than
+       the rules that separate panels. */
+    --seam:       #3c444b;
+
+    --plains:     #e9e5d8;
+    --river:      #bcd2dc;
+    --mountain:   #a9a59b;
+    --inked:      #2a2f34;
+
+    --mine:       #1f7a56;
+    --foe:        #b8432f;
+    --neutral:    #8a8580;
+    --town:       #3b3f45;
+
+    --accent:     #b8432f;
+    --focus:      #1f7a56;
+
+    --heat-0:     #f2e6c8;
+    --heat-1:     #e8b34a;
+    --heat-2:     #d9602c;
+    --heat-3:     #a52a5c;
+    --heat-4:     #5c1b53;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:       #e6e9e4;
+      --ink-soft:  #98a2a8;
+      --ink-faint: #69737a;
+      --paper:     #14181c;
+      --panel:     #1b2026;
+      --rule:      #2e353c;
+      --rule-soft: #242a30;
+      /* On a dark board the seam has to read lighter, not darker. */
+      --seam:      #9aa6af;
+
+      --plains:    #3a3730;
+      --river:     #2c4450;
+      --mountain:  #4a4740;
+      --inked:     #0a0c0e;
+
+      --mine:      #3fbd85;
+      --foe:       #e8654a;
+      --neutral:   #7d7872;
+      --town:      #cdd3d8;
+
+      --accent:    #e8654a;
+      --focus:     #3fbd85;
+
+      --heat-0:    #4a4126;
+      --heat-1:    #a8792c;
+      --heat-2:    #d9602c;
+      --heat-3:    #c2437a;
+      --heat-4:    #e87fb8;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink:       #e6e9e4;
+    --ink-soft:  #98a2a8;
+    --ink-faint: #69737a;
+    --paper:     #14181c;
+    --panel:     #1b2026;
+    --rule:      #2e353c;
+    --rule-soft: #242a30;
+    --seam:      #9aa6af;
+
+    --plains:    #3a3730;
+    --river:     #2c4450;
+    --mountain:  #4a4740;
+    --inked:     #0a0c0e;
+
+    --mine:      #3fbd85;
+    --foe:       #e8654a;
+    --neutral:   #7d7872;
+    --town:      #cdd3d8;
+
+    --accent:    #e8654a;
+    --focus:     #3fbd85;
+
+    --heat-0:    #4a4126;
+    --heat-1:    #a8792c;
+    --heat-2:    #d9602c;
+    --heat-3:    #c2437a;
+    --heat-4:    #e87fb8;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: Archivo, system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+    margin: 0;
+    padding: 0;
+  }
+
+  .wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 20px;
+    align-items: start;
+    max-width: 1500px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 18px 40px;
+  }
+
+  /* ---- header ---- */
+
+  header {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 18px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 12px;
+  }
+
+  h1 {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  .status {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--ink-soft);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .spacer { flex: 1; }
+
+  /* ---- controls ---- */
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  button, select {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+
+  button:hover:not(:disabled), select:hover { border-color: var(--ink-faint); }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  button[aria-pressed="true"] {
+    background: var(--ink);
+    color: var(--paper);
+    border-color: var(--ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+
+  #turn {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    width: 58px;
+    text-align: center;
+  }
+
+  /* ---- board ---- */
+
+  .board {
+    position: relative;
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  canvas { display: block; max-width: 100%; }
+
+  #tip {
+    position: fixed;
+    z-index: 10;
+    pointer-events: none;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 7px 9px;
+    border-radius: 3px;
+    white-space: pre;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #tip[hidden] { display: none; }
+
+  /* ---- side rail ---- */
+
+  aside {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: sticky;
+    top: 18px;
+  }
+
+  section > h2 {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 7px;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 3px 12px;
+    margin: 0;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  dt { color: var(--ink-soft); }
+  dd { margin: 0; text-align: right; }
+
+  /* Legend and ramp share the swatch, so it is defined once. */
+  .sw {
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    flex: none;
+    border: 1px solid rgb(0 0 0 / 0.18);
+  }
+
+  .legend {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .legend div {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--ink-soft);
+  }
+
+  .ramp { display: flex; gap: 2px; margin-bottom: 5px; }
+  .ramp span { height: 9px; flex: 1; border-radius: 1px; }
+
+  .ramp-ends {
+    display: flex;
+    justify-content: space-between;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The one place the page raises its voice: the top cell the search scored
+     against the cell it actually played. Disagreement is the finding. */
+  .verdict {
+    border-left: 3px solid var(--accent);
+    padding: 8px 0 8px 10px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .verdict.agree { border-left-color: var(--mine); }
+  .verdict b { font-weight: 700; }
+  .verdict .note { color: var(--ink-soft); }
+
+  .hint {
+    font-size: 11px;
+    color: var(--ink-faint);
+    line-height: 1.6;
+  }
+
+  kbd {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10px;
+    border: 1px solid var(--rule);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 3px;
+    color: var(--ink-soft);
+  }
+
+  .empty {
+    grid-column: 1 / -1;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 13px;
+    color: var(--ink-soft);
+    line-height: 1.8;
+    padding: 40px 0;
+  }
+
+  @media (max-width: 900px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); }
+    aside { position: static; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Back Track King Inspector</h1>
+    <div class="status" id="status">chargement…</div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <button id="prev" title="Tour précédent (←)">◀</button>
+      <input id="turn" type="number" min="1" value="1" aria-label="Numéro de tour">
+      <button id="next" title="Tour suivant (→)">▶</button>
+      <select id="owner" aria-label="Joueur affiché">
+        <option value="me">Mes candidats</option>
+        <option value="foe">Candidats adverse</option>
+      </select>
+      <button id="heat" aria-pressed="true" title="Heatmap (h)">Heatmap</button>
+      <button id="nums" aria-pressed="true" title="Valeurs (n)">Valeurs</button>
+      <button id="live" aria-pressed="false" title="Recharge toutes les 2s">Live</button>
+    </div>
+  </header>
+
+  <div class="board">
+    <canvas id="cv" width="100" height="100"></canvas>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Tour</h2>
+      <dl id="facts"></dl>
+    </section>
+
+    <section>
+      <h2>Décision</h2>
+      <div class="verdict" id="verdict"></div>
+    </section>
+
+    <section>
+      <h2>Gain — baseline moins gap</h2>
+      <div class="ramp" id="ramp"></div>
+      <div class="ramp-ends"><span id="rampLo">0</span><span id="rampHi">0</span></div>
+    </section>
+
+    <section>
+      <h2>Légende</h2>
+      <div class="legend">
+        <div><i class="sw" style="background:var(--plains)"></i>Plaine — 1 peinture</div>
+        <div><i class="sw" style="background:var(--river)"></i>Rivière — 2</div>
+        <div><i class="sw" style="background:var(--mountain)"></i>Montagne — 3</div>
+        <div><i class="sw" style="background:var(--mine)"></i>Mes rails</div>
+        <div><i class="sw" style="background:var(--foe)"></i>Rails adverses</div>
+        <div><i class="sw" style="background:var(--neutral)"></i>Rails neutres</div>
+        <div><i class="sw" style="background:var(--town)"></i>Ville</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Raccourcis</h2>
+      <p class="hint">
+        <kbd>←</kbd> <kbd>→</kbd> tour · <kbd>h</kbd> heatmap ·
+        <kbd>n</kbd> valeurs · <kbd>o</kbd> joueur<br>
+        Survolez une case pour le détail.
+      </p>
+    </section>
+  </aside>
+</div>
+
+<div id="tip" hidden></div>
+
+<script>
+const CELL = 30;          // cell edge in CSS pixels
+const PAD  = 14;          // margin around the grid, room for the coordinate rulers
+
+const cv   = document.getElementById("cv");
+const ctx  = cv.getContext("2d");
+const tip  = document.getElementById("tip");
+
+const ui = {
+  status:  document.getElementById("status"),
+  turn:    document.getElementById("turn"),
+  prev:    document.getElementById("prev"),
+  next:    document.getElementById("next"),
+  owner:   document.getElementById("owner"),
+  heat:    document.getElementById("heat"),
+  nums:    document.getElementById("nums"),
+  live:    document.getElementById("live"),
+  facts:   document.getElementById("facts"),
+  verdict: document.getElementById("verdict"),
+  ramp:    document.getElementById("ramp"),
+  rampLo:  document.getElementById("rampLo"),
+  rampHi:  document.getElementById("rampHi"),
+};
+
+const state = {
+  turns: [],
+  turn: null,
+  data: null,
+  showHeat: true,
+  showNums: true,
+  showFoe: false,
+  hover: null,
+  liveTimer: null,
+};
+
+// Optional artwork. Drop square images in tools/tiles/ under these names and
+// they replace the flat colours; anything missing falls back to its colour, so
+// a partial set works and no artwork at all still renders the board.
+const TILE_NAMES = ["plains", "river", "mountain", "town", "inked",
+                    "rail_me", "rail_foe", "rail_neutral"];
+const tiles = {};
+
+function loadTiles() {
+  return Promise.all(TILE_NAMES.map((name) => new Promise((done) => {
+    const img = new Image();
+    img.onload = () => { tiles[name] = img; done(); };
+    img.onerror = () => done();
+    img.src = `tiles/${name}.png`;
+  })));
+}
+
+// Artwork is drawn to the cell square whatever its own size, so a set of
+// roughly-square images at any resolution lines up on the grid.
+function drawTile(name, x, y, size) {
+  const img = tiles[name];
+  if (!img) return false;
+  ctx.drawImage(img, x, y, size, size);
+  return true;
+}
+
+const css = (name) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ---- data ----
+
+async function loadTurns() {
+  const r = await fetch("/api/turns");
+  if (!r.ok) throw new Error("index indisponible");
+  state.turns = (await r.json()).turns;
+}
+
+async function loadTurn(n) {
+  const r = await fetch(`/api/turn/${n}`);
+  if (!r.ok) throw new Error(`tour ${n} absent`);
+  state.data = await r.json();
+  state.turn = n;
+  ui.turn.value = n;
+}
+
+// ---- derived ----
+
+// One number per cell: the gap the search gave the first rail laid there,
+// expressed as the gain over leaving the board alone. Higher is better.
+function candidateMap(d) {
+  const owner = state.showFoe ? 1 - d.myId : d.myId;
+  const byCell = new Map();
+  let lo = Infinity, hi = -Infinity;
+  for (const c of d.candidates) {
+    if (c.owner !== owner) continue;
+    const gain = d.baselineGap - c.gap;
+    byCell.set(c.y * 1000 + c.x, { ...c, gain });
+    if (gain < lo) lo = gain;
+    if (gain > hi) hi = gain;
+  }
+  if (!byCell.size) { lo = 0; hi = 0; }
+  return { byCell, lo, hi, owner };
+}
+
+const HEAT = () => [css("--heat-0"), css("--heat-1"), css("--heat-2"),
+                    css("--heat-3"), css("--heat-4")];
+
+function heatColor(gain, lo, hi, stops) {
+  // A flat field would otherwise paint every cell the top colour; keep it at
+  // the bottom of the ramp so "nothing distinguishes these" reads as such.
+  if (hi <= lo) return stops[0];
+  const t = (gain - lo) / (hi - lo);
+  const seg = Math.min(stops.length - 2, Math.floor(t * (stops.length - 1)));
+  return mix(stops[seg], stops[seg + 1], t * (stops.length - 1) - seg);
+}
+
+function mix(a, b, t) {
+  const pa = parse(a), pb = parse(b);
+  const c = pa.map((v, i) => Math.round(v + (pb[i] - v) * t));
+  return `rgb(${c[0]} ${c[1]} ${c[2]})`;
+}
+
+function parse(col) {
+  if (col.startsWith("#")) {
+    const h = col.length === 4
+      ? col.slice(1).split("").map((c) => c + c).join("")
+      : col.slice(1);
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  }
+  return col.match(/\d+/g).slice(0, 3).map(Number);
+}
+
+// ---- drawing ----
+
+function draw() {
+  const d = state.data;
+  if (!d) return;
+
+  const { byCell, lo, hi } = candidateMap(d);
+  const W = d.width, H = d.height;
+  const dpr = window.devicePixelRatio || 1;
+  const w = W * CELL + PAD * 2, h = H * CELL + PAD * 2;
+
+  cv.width = w * dpr;
+  cv.height = h * dpr;
+  cv.style.width = w + "px";
+  cv.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const C = {
+    paper: css("--paper"), ink: css("--ink"), soft: css("--ink-soft"),
+    faint: css("--ink-faint"), seam: css("--seam"),
+    plains: css("--plains"), river: css("--river"), mountain: css("--mountain"),
+    inked: css("--inked"), mine: css("--mine"), foe: css("--foe"),
+    neutral: css("--neutral"), town: css("--town"), accent: css("--accent"),
+  };
+  const terrain = [C.plains, C.river, C.mountain];
+  const stops = HEAT();
+
+  ctx.fillStyle = C.paper;
+  ctx.fillRect(0, 0, w, h);
+
+  const px = (x) => PAD + x * CELL;
+  const py = (y) => PAD + y * CELL;
+
+  // terrain, then ink over it
+  const terrainArt = ["plains", "river", "mountain"];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const t = d.terrain[y][x];
+      // The colour is painted first either way: artwork with transparency
+      // then reads against its own terrain tone rather than bare canvas.
+      ctx.fillStyle = terrain[t] ?? C.plains;
+      ctx.fillRect(px(x), py(y), CELL, CELL);
+      drawTile(terrainArt[t], px(x), py(y), CELL);
+
+      if (d.inked[y][x] && !drawTile("inked", px(x), py(y), CELL)) {
+        ctx.fillStyle = C.inked;
+        ctx.globalAlpha = 0.82;
+        ctx.fillRect(px(x), py(y), CELL, CELL);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // Heatmap over the candidate cells. It is translucent so terrain artwork
+  // stays readable underneath; with flat colours underneath it is near-opaque,
+  // since there is nothing below worth showing through.
+  if (state.showHeat) {
+    const anyArt = TILE_NAMES.some((n) => tiles[n]);
+    for (const c of byCell.values()) {
+      ctx.fillStyle = heatColor(c.gain, lo, hi, stops);
+      ctx.globalAlpha = anyArt ? 0.65 : 0.88;
+      ctx.fillRect(px(c.x), py(c.y), CELL, CELL);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Region seams: only the edges between two different regions are drawn, so
+  // the region shapes read without a grid over the whole board.
+  ctx.strokeStyle = C.seam;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const r = d.regions[y][x];
+      if (x + 1 < W && d.regions[y][x + 1] !== r) {
+        ctx.moveTo(px(x + 1), py(y)); ctx.lineTo(px(x + 1), py(y + 1));
+      }
+      if (y + 1 < H && d.regions[y + 1][x] !== r) {
+        ctx.moveTo(px(x), py(y + 1)); ctx.lineTo(px(x + 1), py(y + 1));
+      }
+    }
+  }
+  ctx.stroke();
+
+  // Board outline, in the same ink as the seams so the edge of the map does
+  // not read as lighter than the borders inside it.
+  ctx.strokeStyle = C.seam;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(PAD, PAD, W * CELL, H * CELL);
+
+  // rails
+  const railColor = { 0: null, 1: null, 2: C.neutral };
+  railColor[d.myId] = C.mine;
+  railColor[1 - d.myId] = C.foe;
+  railColor[2] = C.neutral;
+
+  const railArt = {};
+  railArt[d.myId] = "rail_me";
+  railArt[1 - d.myId] = "rail_foe";
+  railArt[2] = "rail_neutral";
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const o = d.rails[y][x];
+      if (o < 0) continue;
+      if (drawTile(railArt[o], px(x), py(y), CELL)) continue;
+      ctx.fillStyle = railColor[o] ?? C.neutral;
+      ctx.beginPath();
+      ctx.arc(px(x) + CELL / 2, py(y) + CELL / 2, CELL * 0.27, 0, 7);
+      ctx.fill();
+    }
+  }
+
+  // towns
+  ctx.font = '700 11px "JetBrains Mono", monospace';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const t of d.towns) {
+    const x = px(t.x), y = py(t.y);
+    const art = drawTile("town", x, y, CELL);
+    if (!art) {
+      ctx.fillStyle = C.town;
+      ctx.fillRect(x + 3, y + 3, CELL - 6, CELL - 6);
+    }
+    // The id has to stay legible on artwork of any tone, so on a tile it gets
+    // a dark plate rather than relying on the image being light or dark.
+    if (art) {
+      ctx.fillStyle = "rgb(0 0 0 / 0.55)";
+      ctx.beginPath();
+      ctx.arc(x + CELL / 2, y + CELL / 2, CELL * 0.28, 0, 7);
+      ctx.fill();
+    }
+    ctx.fillStyle = art ? "#ffffff" : C.paper;
+    ctx.fillText(String(t.id), x + CELL / 2, y + CELL / 2 + 0.5);
+  }
+
+  // candidate values
+  if (state.showNums) {
+    ctx.font = '500 10px "JetBrains Mono", monospace';
+    const onArt = TILE_NAMES.some((n) => tiles[n]);
+    for (const c of byCell.values()) {
+      const cx = px(c.x) + CELL / 2, cy = py(c.y) + CELL / 2 + 0.5;
+      // Over artwork the backdrop is unknown, so the number carries its own
+      // outline; over flat colour the ink is simply chosen against the heat.
+      if (onArt) {
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = "rgb(0 0 0 / 0.75)";
+        ctx.strokeText(String(c.gain), cx, cy);
+        ctx.fillStyle = "#ffffff";
+      } else {
+        ctx.fillStyle = state.showHeat
+          ? (c.gain > (lo + hi) / 2 ? "#ffffff" : "#1a1410")
+          : C.soft;
+      }
+      ctx.fillText(String(c.gain), cx, cy);
+    }
+  }
+
+  // The cells actually played, ringed so the eye lands on them last.
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = C.accent;
+  for (const c of d.decision.cells)
+    ctx.strokeRect(px(c.x) + 1.5, py(c.y) + 1.5, CELL - 3, CELL - 3);
+
+  // hovered cell
+  if (state.hover) {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = C.ink;
+    ctx.strokeRect(px(state.hover.x) + 1, py(state.hover.y) + 1,
+                   CELL - 2, CELL - 2);
+  }
+
+  // coordinate rulers, every fifth line
+  ctx.font = '400 9px "JetBrains Mono", monospace';
+  ctx.fillStyle = C.faint;
+  for (let x = 0; x < W; x += 5)
+    ctx.fillText(String(x), px(x) + CELL / 2, PAD / 2 + 1);
+  ctx.textAlign = "right";
+  for (let y = 0; y < H; y += 5)
+    ctx.fillText(String(y), PAD - 3, py(y) + CELL / 2);
+
+  drawSidebar(d, byCell, lo, hi, stops);
+}
+
+// ---- side rail ----
+
+function drawSidebar(d, byCell, lo, hi, stops) {
+  const inkedCount = d.regionInfo.filter((r) => r.inked).length;
+  const unstable = d.regionInfo.filter((r) => r.instability > 0 && !r.inked);
+  const mineRails = d.rails.flat().filter((v) => v === d.myId).length;
+  const foeRails = d.rails.flat().filter((v) => v === 1 - d.myId).length;
+
+  const rows = [
+    ["tour", d.turn],
+    ["score", `${d.scores.me} — ${d.scores.foe}`],
+    ["mes rails", mineRails],
+    ["rails adv.", foeRails],
+    ["wishes", d.wishes.length],
+    ["baseline gap", d.baselineGap],
+    ["candidats", byCell.size],
+    ["régions inked", `${inkedCount} / ${d.regionInfo.length}`],
+    ["instables", unstable.length],
+  ];
+  ui.facts.innerHTML = rows
+    .map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`)
+    .join("");
+
+  // Top-scored cell against the cell played. When they disagree, the number
+  // the search maximised is not the number that chose the move -- which is
+  // the whole reason to look at this page.
+  const played = d.decision.cells;
+  let best = null;
+  for (const c of byCell.values())
+    if (!best || c.gain > best.gain) best = c;
+
+  if (!best) {
+    ui.verdict.className = "verdict";
+    ui.verdict.innerHTML = `<span class="note">aucun candidat ce tour</span>`;
+  } else {
+    const first = played[0];
+    const agrees = first && first.x === best.x && first.y === best.y;
+    const playedGain = first
+      ? byCell.get(first.y * 1000 + first.x)?.gain
+      : undefined;
+    ui.verdict.className = "verdict" + (agrees ? " agree" : "");
+    ui.verdict.innerHTML = [
+      `<b>joué</b>  ${played.length
+        ? played.map((c) => `${c.x},${c.y}`).join("  ")
+        : "WAIT"}`,
+      `<b>gain max</b>  ${best.x},${best.y} → ${best.gain}`,
+      agrees
+        ? `<span class="note">le 1ᵉʳ rail est le maximum</span>`
+        : `<span class="note">1ᵉʳ rail joué → ${
+            playedGain ?? "hors candidats"
+          }, écart ${
+            playedGain === undefined ? "?" : best.gain - playedGain
+          }</span>`,
+      d.decision.disrupt !== -1
+        ? `<b>disrupt</b>  région ${d.decision.disrupt}`
+        : "",
+    ].filter(Boolean).join("<br>");
+  }
+
+  ui.ramp.innerHTML = stops
+    .map((c) => `<span style="background:${c}"></span>`)
+    .join("");
+  ui.rampLo.textContent = byCell.size ? lo : "—";
+  ui.rampHi.textContent = byCell.size ? hi : "—";
+
+  const who = state.showFoe ? "adversaire" : "moi";
+  ui.status.textContent =
+    `tour ${d.turn} / ${state.turns.length ? state.turns.at(-1) : "?"}` +
+    ` · ${d.width}×${d.height} · candidats ${who}`;
+}
+
+// ---- interaction ----
+
+function cellAt(ev) {
+  const r = cv.getBoundingClientRect();
+  const scale = cv.clientWidth / (state.data.width * CELL + PAD * 2);
+  const x = Math.floor(((ev.clientX - r.left) / scale - PAD) / CELL);
+  const y = Math.floor(((ev.clientY - r.top) / scale - PAD) / CELL);
+  const d = state.data;
+  if (x < 0 || y < 0 || x >= d.width || y >= d.height) return null;
+  return { x, y };
+}
+
+cv.addEventListener("mousemove", (ev) => {
+  if (!state.data) return;
+  const cell = cellAt(ev);
+  const changed =
+    (cell?.x !== state.hover?.x) || (cell?.y !== state.hover?.y);
+  state.hover = cell;
+  if (!cell) { tip.hidden = true; if (changed) draw(); return; }
+
+  const d = state.data;
+  const { byCell } = candidateMap(d);
+  const c = byCell.get(cell.y * 1000 + cell.x);
+  const terrainName = ["plaine", "rivière", "montagne"][d.terrain[cell.y][cell.x]];
+  const region = d.regions[cell.y][cell.x];
+  const info = d.regionInfo.find((r) => r.id === region);
+  const owner = d.rails[cell.y][cell.x];
+  const ownerName =
+    owner < 0 ? "—"
+    : owner === 2 ? "neutre"
+    : owner === d.myId ? "moi" : "adversaire";
+
+  tip.textContent = [
+    `(${cell.x}, ${cell.y})  ${terrainName}`,
+    `région ${region}   ${info ? info.instability : 0}/${d.inkThreshold}` +
+      (info?.inked ? "  INKED" : ""),
+    `rail    ${ownerName}`,
+    c ? `gap     ${c.gap}  (baseline ${d.baselineGap})` : `gap     —`,
+    c ? `gain    ${c.gain}   coût ${c.cost}` : `non candidat`,
+  ].join("\n");
+  tip.hidden = false;
+  tip.style.left = Math.min(ev.clientX + 14, innerWidth - 200) + "px";
+  tip.style.top = (ev.clientY + 14) + "px";
+  if (changed) draw();
+});
+
+cv.addEventListener("mouseleave", () => {
+  tip.hidden = true;
+  state.hover = null;
+  draw();
+});
+
+async function go(n) {
+  if (!state.turns.length) return;
+  const lo = state.turns[0], hi = state.turns.at(-1);
+  n = Math.max(lo, Math.min(hi, n));
+  try {
+    await loadTurn(n);
+    draw();
+  } catch (err) {
+    ui.status.textContent = String(err.message ?? err);
+  }
+  ui.prev.disabled = n <= lo;
+  ui.next.disabled = n >= hi;
+}
+
+function toggle(btn, key) {
+  const on = !state[key];
+  state[key] = on;
+  btn.setAttribute("aria-pressed", String(on));
+  draw();
+}
+
+ui.prev.onclick = () => go(state.turn - 1);
+ui.next.onclick = () => go(state.turn + 1);
+ui.turn.onchange = () => go(parseInt(ui.turn.value, 10) || 1);
+ui.heat.onclick = () => toggle(ui.heat, "showHeat");
+ui.nums.onclick = () => toggle(ui.nums, "showNums");
+ui.owner.onchange = () => { state.showFoe = ui.owner.value === "foe"; draw(); };
+
+ui.live.onclick = () => {
+  const on = !state.liveTimer;
+  ui.live.setAttribute("aria-pressed", String(on));
+  if (!on) { clearInterval(state.liveTimer); state.liveTimer = null; return; }
+  state.liveTimer = setInterval(async () => {
+    const last = state.turns.at(-1);
+    await loadTurns().catch(() => {});
+    // Follow the head of a running match, but leave the user alone if they
+    // have navigated back to an earlier turn to look at something.
+    if (state.turns.at(-1) !== last && state.turn === last)
+      go(state.turns.at(-1));
+  }, 2000);
+};
+
+addEventListener("keydown", (ev) => {
+  if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
+  if (ev.key === "ArrowLeft")  { ev.preventDefault(); go(state.turn - 1); }
+  if (ev.key === "ArrowRight") { ev.preventDefault(); go(state.turn + 1); }
+  if (ev.key === "h") ui.heat.click();
+  if (ev.key === "n") ui.nums.click();
+  if (ev.key === "o") {
+    ui.owner.value = state.showFoe ? "me" : "foe";
+    ui.owner.onchange();
+  }
+});
+
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+
+(async function start() {
+  // Artwork first: a tile arriving after the board is drawn would leave the
+  // grid half-painted until the next redraw.
+  await loadTiles();
+  try {
+    await loadTurns();
+  } catch (err) {
+    ui.status.textContent = "serveur injoignable";
+    return;
+  }
+  if (!state.turns.length) {
+    document.querySelector(".board").innerHTML =
+      `<p class="empty">Aucun dump.\n\n` +
+      `  make debug\n` +
+      `  ./tools/btk-debug replay &lt;events.jsonl&gt; tools/dumps 20\n\n` +
+      `puis rechargez.</p>`;
+    ui.status.textContent = "en attente de dumps";
+    return;
+  }
+  await go(state.turns[0]);
+})();
+</script>

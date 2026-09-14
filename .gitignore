@@ -49,6 +49,7 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+!/Makefile
 install_manifest.txt
 compile_commands.json
 
@@ -68,6 +69,13 @@ vcpkg_installed/
 Testing/
 .cache/
 .colosseum/
+
+# debug tool artefacts (the sources in tools/ are versioned)
+tools/btk-debug
+tools/dumps/
+tools/__pycache__/
+# tile artwork is optional and local; drop PNGs in tools/tiles/ to use them
+tools/tiles/
 
 #AI
 .serena
