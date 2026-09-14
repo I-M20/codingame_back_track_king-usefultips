@@ -25,19 +25,21 @@
     --mountain:   #a9a59b;
     --inked:      #2a2f34;
 
-    --mine:       #1f7a56;
-    --foe:        #b8432f;
+    --mine:       #d02020;
+    --foe:        #1f5fd0;
     --neutral:    #8a8580;
-    --town:       #3b3f45;
+    --town:       #000000;
 
-    --accent:     #b8432f;
-    --focus:      #1f7a56;
+    /* The ringed cell must not be mistaken for a rail, so the accent stays
+       off both rail hues. */
+    --accent:     #1a1a1a;
+    --focus:      #1f5fd0;
 
-    --heat-0:     #f2e6c8;
-    --heat-1:     #e8b34a;
-    --heat-2:     #d9602c;
-    --heat-3:     #a52a5c;
-    --heat-4:     #5c1b53;
+    --heat-0:     #fbe4ee;
+    --heat-1:     #f4a8c8;
+    --heat-2:     #e8639b;
+    --heat-3:     #d02a55;
+    --heat-4:     #8f0f22;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -57,19 +59,19 @@
       --mountain:  #4a4740;
       --inked:     #0a0c0e;
 
-      --mine:      #3fbd85;
-      --foe:       #e8654a;
+      --mine:      #ff5252;
+      --foe:       #5599ff;
       --neutral:   #7d7872;
-      --town:      #cdd3d8;
+      --town:      #000000;
 
-      --accent:    #e8654a;
-      --focus:     #3fbd85;
+      --accent:    #f2f4f0;
+      --focus:     #5599ff;
 
-      --heat-0:    #4a4126;
-      --heat-1:    #a8792c;
-      --heat-2:    #d9602c;
-      --heat-3:    #c2437a;
-      --heat-4:    #e87fb8;
+      --heat-0:    #4a1a2c;
+      --heat-1:    #8f2a52;
+      --heat-2:    #c93a68;
+      --heat-3:    #e8557a;
+      --heat-4:    #ff8c94;
     }
   }
 
@@ -88,19 +90,19 @@
     --mountain:  #4a4740;
     --inked:     #0a0c0e;
 
-    --mine:      #3fbd85;
-    --foe:       #e8654a;
+    --mine:      #ff5252;
+    --foe:       #5599ff;
     --neutral:   #7d7872;
-    --town:      #cdd3d8;
+    --town:      #000000;
 
-    --accent:    #e8654a;
-    --focus:     #3fbd85;
+    --accent:    #f2f4f0;
+    --focus:     #5599ff;
 
-    --heat-0:    #4a4126;
-    --heat-1:    #a8792c;
-    --heat-2:    #d9602c;
-    --heat-3:    #c2437a;
-    --heat-4:    #e87fb8;
+    --heat-0:    #4a1a2c;
+    --heat-1:    #8f2a52;
+    --heat-2:    #c93a68;
+    --heat-3:    #e8557a;
+    --heat-4:    #ff8c94;
   }
 
   * { box-sizing: border-box; }
@@ -264,6 +266,9 @@
     border: 1px solid rgb(0 0 0 / 0.18);
   }
 
+  /* Rails are discs on the board; the legend says so. */
+  .sw.dot { border-radius: 50%; }
+
   .legend {
     display: flex;
     flex-direction: column;
@@ -386,9 +391,9 @@
         <div><i class="sw" style="background:var(--plains)"></i>Plaine — 1 peinture</div>
         <div><i class="sw" style="background:var(--river)"></i>Rivière — 2</div>
         <div><i class="sw" style="background:var(--mountain)"></i>Montagne — 3</div>
-        <div><i class="sw" style="background:var(--mine)"></i>Mes rails</div>
-        <div><i class="sw" style="background:var(--foe)"></i>Rails adverses</div>
-        <div><i class="sw" style="background:var(--neutral)"></i>Rails neutres</div>
+        <div><i class="sw dot" style="background:var(--mine)"></i>Mes rails</div>
+        <div><i class="sw dot" style="background:var(--foe)"></i>Rails adverses</div>
+        <div><i class="sw dot" style="background:var(--neutral)"></i>Rails neutres</div>
         <div><i class="sw" style="background:var(--town)"></i>Ville</div>
       </div>
     </section>
@@ -655,16 +660,21 @@ function draw() {
     if (!art) {
       ctx.fillStyle = C.town;
       ctx.fillRect(x + 3, y + 3, CELL - 6, CELL - 6);
-    }
-    // The id has to stay legible on artwork of any tone, so on a tile it gets
-    // a dark plate rather than relying on the image being light or dark.
-    if (art) {
+      // A black square would vanish into a dark board, so it carries a thin
+      // light edge -- on a light board the edge is invisible anyway.
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = C.seam;
+      ctx.strokeRect(x + 3.5, y + 3.5, CELL - 7, CELL - 7);
+    } else {
+      // The id has to stay legible on artwork of any tone, so on a tile it
+      // gets a dark plate rather than relying on the image being light.
       ctx.fillStyle = "rgb(0 0 0 / 0.55)";
       ctx.beginPath();
       ctx.arc(x + CELL / 2, y + CELL / 2, CELL * 0.28, 0, 7);
       ctx.fill();
     }
-    ctx.fillStyle = art ? "#ffffff" : C.paper;
+    // The town square is black in both themes, so its id is always white.
+    ctx.fillStyle = "#ffffff";
     ctx.fillText(String(t.id), x + CELL / 2, y + CELL / 2 + 0.5);
   }
 
@@ -819,14 +829,45 @@ cv.addEventListener("mousemove", (ev) => {
     : owner === 2 ? "neutre"
     : owner === d.myId ? "moi" : "adversaire";
 
-  tip.textContent = [
+  // On a town, the connections it is asked for. The referee states a wish
+  // from both of its towns, so the deduplicated list -- not the town's own
+  // `wishes` field -- is what tells the whole story for this town.
+  const town = d.towns.find((t) => t.x === cell.x && t.y === cell.y);
+  const lines = [
     `(${cell.x}, ${cell.y})  ${terrainName}`,
     `région ${region}   ${info ? info.instability : 0}/${d.inkThreshold}` +
       (info?.inked ? "  INKED" : ""),
-    `rail    ${ownerName}`,
-    c ? `gap     ${c.gap}  (baseline ${d.baselineGap})` : `gap     —`,
-    c ? `gain    ${c.gain}   coût ${c.cost}` : `non candidat`,
-  ].join("\n");
+  ];
+
+  if (town) {
+    const active = new Set((d.active ?? []).map((w) => w.join("-")));
+    const links = d.wishes
+      .filter((w) => w.includes(town.id))
+      .map((w) => ({
+        other: w[0] === town.id ? w[1] : w[0],
+        live: active.has(w.join("-")),
+      }))
+      .sort((a, b) => a.other - b.other);
+
+    lines.push(`ville   ${town.id}`);
+    if (links.length) {
+      const done = links.filter((l) => l.live).length;
+      lines.push(`liaisons ${done}/${links.length} actives`);
+      // ✓ reads at a glance which wish is already paying out.
+      lines.push("  " + links
+        .map((l) => `${l.live ? "✓" : "·"}${l.other}`)
+        .join("  "));
+    } else {
+      lines.push(`liaisons aucune`);
+    }
+  } else {
+    lines.push(`rail    ${ownerName}`);
+  }
+
+  lines.push(c ? `gap     ${c.gap}  (baseline ${d.baselineGap})` : `gap     —`);
+  lines.push(c ? `gain    ${c.gain}   coût ${c.cost}` : `non candidat`);
+
+  tip.textContent = lines.join("\n");
   tip.hidden = false;
   tip.style.left = Math.min(ev.clientX + 14, innerWidth - 200) + "px";
   tip.style.top = (ev.clientY + 14) + "px";

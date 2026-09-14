@@ -142,10 +142,32 @@ beam interne lui a donné. `main.cpp` reste compilable et jouable seul — c'est
 bit près (les hooks sont des macros vides hors `DEBUG_TOOL`).
 
 ```sh
-make debug                                          # construit tools/btk-debug
-./tools/btk-debug replay <events.jsonl> tools/dumps 20   # rejoue 20 tours
-make viewer                                         # http://localhost:8000
+make replay LOG=.colosseum/logs/firstenv/run-*/game_*_p0.events.jsonl
+make viewer     # puis http://localhost:8000
 ```
+
+### Commandes du Makefile
+
+| commande | effet |
+|---|---|
+| `make` / `make play` | compile `main.cpp` seul → `a.out` (le binaire de compétition) |
+| `make check` | vérifie que `main.cpp` compile sans l'outil — le garde-fou de la contrainte |
+| `make debug` | construit `tools/btk-debug`, uniquement si `main.cpp` ou `debug_tool.cpp` ont changé |
+| `make replay LOG=<jsonl>` | construit l'outil si besoin, vide les anciens dumps, puis rejoue la partie |
+| `make viewer` | sert l'interface sur `http://localhost:8000` |
+| `make clean` | supprime `a.out` et `tools/btk-debug` |
+
+Variables : `LOG` (obligatoire pour `replay`), `TURNS` (défaut 100, plafonné à
+la longueur de la partie), `DUMPS` (défaut `tools/dumps`), `PORT` (défaut 8000).
+
+```sh
+make replay LOG=<jsonl> TURNS=30     # s'arrêter au tour 30
+make viewer PORT=8080                # si le port est déjà pris
+```
+
+`replay` efface `tools/dumps/turn_*.json` avant de rejouer : sans ça, une
+partie plus courte laisserait derrière elle la fin de la précédente, et le
+viewer listerait ces tours comme s'ils appartenaient à la nouvelle.
 
 Sous WSL, un navigateur Windows n'atteint pas le `localhost` de la distro :
 `serve.py` affiche au démarrage la seconde adresse (`http://172.x.x.x:8000/`)

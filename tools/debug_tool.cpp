@@ -18,6 +18,7 @@
 
 #include <fstream>
 #include <iomanip>
+#include <sys/stat.h>
 
 // ====================
 // CAPTURE
@@ -49,6 +50,9 @@ public:
     int disrupt = -1;
     int myScore = 0, foeScore = 0;
     int myId = 0;
+    // Wishes already connected this turn, so the viewer can tell a link that
+    // still has to be built from one that is already paying out.
+    vector<pair<int, int>> active;
 
     // Which planning pass the candidates being reported belong to. The outer
     // beam calls generateActionSets() once per node per depth -- on a busy
@@ -247,6 +251,12 @@ void DebugProbe::write(const string &path) const
            << wishes[i].second << "]";
     os << "],\n";
 
+    os << "  \"active\": [";
+    for (size_t i = 0; i < active.size(); i++)
+        os << (i ? "," : "") << "[" << active[i].first << ","
+           << active[i].second << "]";
+    os << "],\n";
+
     os << "  \"baselineGap\": " << baselineGap << ",\n";
     os << "  \"inkThreshold\": " << INK_INSTABILITY_THRESHOLD << ",\n";
 
@@ -272,6 +282,17 @@ void DebugProbe::write(const string &path) const
 // ====================
 // DRIVING THE ENGINE
 
+// Created up front rather than failing a turn at a time: a missing output
+// directory is a typo or a cleaned tree, not a reason to lose the run.
+static void ensureDir(const string &dir)
+{
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0)
+        return;
+    if (mkdir(dir.c_str(), 0755) != 0)
+        fprintf(stderr, "debug_tool: cannot create %s\n", dir.c_str());
+}
+
 static string turnPath(const string &dir, int turn)
 {
     char buf[32];
@@ -289,12 +310,30 @@ static void runTurn(Game &game, DebugProbe &probe, const string &outdir,
     probe.myId = game.myId;
     probe.myScore = game.myScore;
     probe.foeScore = game.foeScore;
+
+    // The referee reports a live connection from both of its towns; the pair
+    // is canonicalised the way BeamSearch::setup() does so the viewer can
+    // match it against a wish.
+    probe.active.clear();
+    for (const auto &kv : game.activeConnections)
+    {
+        if (!kv.second)
+            continue;
+        const int a = min(kv.first.first, kv.first.second);
+        const int b = max(kv.first.first, kv.first.second);
+        if (find(probe.active.begin(), probe.active.end(), make_pair(a, b)) ==
+            probe.active.end())
+            probe.active.push_back({a, b});
+    }
+
     if (probe.haveBoard)
         probe.write(turnPath(outdir, turn));
 }
 
 static int runLive(const string &outdir)
 {
+    ensureDir(outdir);
+
     DebugProbe probe;
     g_probe = &probe;
 
@@ -368,6 +407,8 @@ static bool parseEventLine(const string &line, string &type, string &data)
 static int runReplay(const string &eventsPath, const string &outdir,
                      int wantTurn)
 {
+    ensureDir(outdir);
+
     ifstream f(eventsPath);
     if (!f)
     {
@@ -405,14 +446,14 @@ static int runReplay(const string &eventsPath, const string &outdir,
             TURN_BUDGET_MS == 30 ? ", matching the referee"
                                  : ", NOT the referee's 30 ms");
 
+    // Asking for more turns than the game holds means "all of it", not a
+    // mistake: a caller replaying a batch of games cannot know each length.
     const int lastTurn = (int)inputs.size();
     if (wantTurn > lastTurn)
-    {
-        fprintf(stderr, "debug_tool: turn %d requested, game has %d\n",
-                wantTurn, lastTurn);
-        return 1;
-    }
-    const int stopTurn = wantTurn > 0 ? wantTurn : lastTurn;
+        fprintf(stderr, "debug_tool: game is %d turns, %d asked -- replaying "
+                        "all of it\n",
+                lastTurn, wantTurn);
+    const int stopTurn = wantTurn > 0 ? min(wantTurn, lastTurn) : lastTurn;
 
     // Game reads cin directly, so the recording is handed to it as cin rather
     // than threading a stream through the engine's signatures.
