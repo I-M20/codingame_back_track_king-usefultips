@@ -140,12 +140,19 @@ Each time we want a A* distance, verify if a cache entry exist :
 
 ## Versions
 
+### v2.2
+
+Infinite 'WAIT' turns bug resolved by finding the best non empty action when first beam depth is broken
+
+Last moment in arena: -
+First moment in arena: 
+
 ### v2.1
 
 Reduce time budget from 45ms to 30ms : No remaining timeouts
 But many games are lost because of infinite WAIT action trhown each turn...
 
-Last moment in arena: -
+Last moment in arena: 707/1316 overall & Bronze league
 First moment in arena: 100/400 Bronze
 
 ### v2.0
