@@ -1382,6 +1382,10 @@ public:
     mutable vector<int> gapPairBest;
     // Index permutation used to rank a round's lines without copying boards.
     vector<int> grownOrder;
+    // (score, index) pairs the beam is ranked through, and the survivors it
+    // hands back. Members so the two keep their capacity across depths.
+    vector<pair<int, int>> rankScratch;
+    vector<BeamNode> keptScratch;
     // The single board every planning call mutates in place, reused across
     // calls so its buffers are allocated once and not per turn.
     Map scratchBoard;
@@ -2426,14 +2430,43 @@ public:
 
             {
                 // PROFILE(sortBeam);
-                sort(nextBeam.begin(), nextBeam.end(),
-                     [](const BeamNode &a, const BeamNode &b)
-                     { return a.score > b.score; });
-            }
-            if ((int)nextBeam.size() > BEAM_WIDTH)
-                nextBeam.resize(BEAM_WIDTH);
+                // Ranked through an index rather than by moving nodes: a
+                // BeamNode carries a Map and two containers, so every swap the
+                // sort makes is a fistful of pointers, while a (score, index)
+                // pair is 8 bytes and stays in L1. Only the survivors are
+                // moved, once each.
+                //
+                // The index is the tie-break, so equal scores keep the order
+                // they were generated in -- nth_element and sort both shuffle
+                // ties otherwise, and the scan below picks a move out of this
+                // ranking, so an arbitrary tie order would make the turn
+                // depend on the sort's internals.
+                rankScratch.clear();
+                rankScratch.reserve(nextBeam.size());
+                for (int i = 0; i < (int)nextBeam.size(); i++)
+                    rankScratch.push_back({nextBeam[i].score, i});
 
-            beam = move(nextBeam);
+                const int keep = min((int)rankScratch.size(), BEAM_WIDTH);
+                auto better = [](const pair<int, int> &a,
+                                 const pair<int, int> &b)
+                {
+                    if (a.first != b.first)
+                        return a.first > b.first;
+                    return a.second < b.second;
+                };
+                // Only the survivors are ordered; the discarded tail is left
+                // as it falls. partial_sort rather than nth_element + sort:
+                // the beam is a hundred-odd entries, where one heap pass beats
+                // a partition followed by a second ordering pass.
+                partial_sort(rankScratch.begin(), rankScratch.begin() + keep,
+                             rankScratch.end(), better);
+
+                keptScratch.clear();
+                keptScratch.reserve(keep);
+                for (int i = 0; i < keep; i++)
+                    keptScratch.push_back(move(nextBeam[rankScratch[i].second]));
+                beam.swap(keptScratch);
+            }
 
             // The depth ran out of time: its results are already merged in,
             // and there is nothing left in the budget for another one.
