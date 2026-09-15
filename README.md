@@ -144,7 +144,7 @@ sont connectés — l'état dans lequel se passe ~75% d'une partie.
 ## Next steps
 
 - Refaire entierement l'heuristic du beam interne
-- partial_sort to BEAM_WIDTH instead of a full sort
+- Préferer les cells non encrable
 - Cache/incrementalize openGapTotal — the single highest-value change. It re-does a full multi-component flood-fill per node when consecutive nodes differ by only ~3 rails.
 <!-- - openGapTotal prends 1/2 du temps total.. Supprimer entierement et refaire le cache a* avec invalidation quand région supprimé. -->
 <!-- - Lister les endroits ou on fait des floodfill/a* et mettre en cache tout ça -->
@@ -152,8 +152,6 @@ sont connectés — l'état dans lequel se passe ~75% d'une partie.
 ### Optimizations list
 
 Here are the optimizations, ranked by expected gain.
-
-2. (c) map<pair<int,int>,bool> active per node — a red-black tree copied per child, one allocation per wish. Since wishes is a fixed indexed vector, replace with uint64_t activeMask (or array<bool, MAX_WISHES>). One word instead of a tree. simulateTurn rebuilds it anyway, so this is a local change.
 
 3. Avoid constructing children you'll discard
 You build all ~1200 children then keep 30. Since evaluate needs the simulated board you can't score-before-build directly, but you can:
