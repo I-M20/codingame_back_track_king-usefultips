@@ -284,6 +284,10 @@ même tour peuvent différer. Les valeurs de la heatmap, elles, sont stables :
 
 ## Versions
 
+### v2.3
+
+Try nested beam search heuristic improvments
+
 ### v2.2
 
 Infinite 'WAIT' turns bug resolved by finding the best non empty action when first beam depth is broken
