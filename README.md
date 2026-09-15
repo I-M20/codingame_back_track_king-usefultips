@@ -180,30 +180,7 @@ nth_element is O(n) vs partial_sort's O(n log k), and you then sort only 30 pair
 
 Note partial_sort alone would still move BeamNodes, so it's the wrong tool here.
 
-2. The real hotspot: child.state = node.state (Map copy)
-At main.cpp:2307 you deep-copy a whole Map per child — up to 1200 times per depth. Each copy is:
-
-vector<Tile> — 20 bytes/tile × W×H (fine, one memcpy)
-vector<Town> — one heap allocation per town for desiredConnections
-unordered_map<int,Region> — every Region holds vector<Coord>, so one allocation per region plus node-per-entry
-unordered_map<int,Coord>, unordered_map<int,bool> — node-per-entry allocations
-This is likely 10–100× the cost of the sort. Three fixes, in order of value:
-
-(a) towns, regionById, townCoord, regionHasTown, townCellFlag are immutable during the search (only grid tiles change: rails, ink, instability — and regionById[].inked/instability if you mutate that). Split Map into a shared const StaticMap* (like you already did for pathTable) and a mutable per-node part. A BeamNode then copies only vector<Tile> — one memcpy — and the copy becomes essentially free.
-
-(b) Shrink Tile from 20 → 4 bytes. regionId, type, tracksOwner, inked, instability all fit in bytes:
-
-
-struct Tile {          // 4 bytes instead of 20
-    int16_t regionId;
-    uint8_t type;
-    int8_t  tracksOwner;   // NO_OWNER = -1
-    // inked + instability folded into region state, or:
-    // uint8_t packed; // inked:1, instability:7
-};
-A 30×20 board goes from 12 KB to 2.4 KB per state — a beam of 30 states fits in L2 instead of thrashing it, and your BFS/flood-fill scans in openGapTotal get 5× the cache lines per fetch. This probably helps the flood-fills more than the copies.
-
-(c) map<pair<int,int>,bool> active per node — a red-black tree copied per child, one allocation per wish. Since wishes is a fixed indexed vector, replace with uint64_t activeMask (or array<bool, MAX_WISHES>). One word instead of a tree. simulateTurn rebuilds it anyway, so this is a local change.
+2. (c) map<pair<int,int>,bool> active per node — a red-black tree copied per child, one allocation per wish. Since wishes is a fixed indexed vector, replace with uint64_t activeMask (or array<bool, MAX_WISHES>). One word instead of a tree. simulateTurn rebuilds it anyway, so this is a local change.
 
 3. Avoid constructing children you'll discard
 You build all ~1200 children then keep 30. Since evaluate needs the simulated board you can't score-before-build directly, but you can:

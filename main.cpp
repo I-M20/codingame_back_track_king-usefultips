@@ -248,15 +248,15 @@ public:
     const Tile &get(int x, int y) const { return tiles[y * width + x]; }
 };
 
+// A region's fixed description. Ink and instability are per-board state and
+// live on the Map, so a beam copy does not drag the cell lists along.
 class Region
 {
 public:
     int id;
-    int instability;
-    bool inked;
     vector<Coord> coords;
     bool hasTown;
-    Region(int id = 0) : id(id), instability(0), inked(false), hasTown(false) {}
+    Region(int id = 0) : id(id), hasTown(false) {}
 };
 
 // Paint cost to place a rail on a terrain type.
@@ -639,29 +639,59 @@ public:
 //
 // A Map is copied wholesale by the beam search to represent a simulated
 // future state, so it stays a plain value type.
+// The half of a board that never changes once the referee has described it:
+// terrain regions, towns, and the region->cells lists. A beam state copies
+// only what a turn can alter, so this is held once and shared by pointer.
+class StaticMap
+{
+public:
+    vector<Town> towns;
+    // Regions by dense index. The referee numbers them 0..N-1; `slotOfRegion`
+    // maps id -> index anyway, so a sparse numbering still works.
+    vector<Region> regions;
+    vector<int> regionSlot;
+    // quick lookup: town id -> coord
+    unordered_map<int, Coord> townCoord;
+    // Flat per-cell town flag. A set<pair> lookup here cost a tree walk and
+    // was hit millions of times per turn from the path/group scans.
+    vector<char> townCellFlag;
+    // Per-slot: does this region contain a town?
+    vector<char> regionHasTown;
+    // Region ids, ascending, so allRegionIds() need not sort per call.
+    vector<int> sortedRegionIds;
+
+    // Slot for a region id, or -1 when the id is unknown.
+    int slotOfRegion(int regionId) const
+    {
+        if (regionId < 0 || regionId >= (int)regionSlot.size())
+            return -1;
+        return regionSlot[regionId];
+    }
+};
+
 class Map
 {
 public:
     Map() {}
 
-    // Copying a Map happens once per beam child, so the scratch buffers are
-    // deliberately left behind: they carry no value, only working space, and
-    // copying them was pure overhead. Each copy lazily rebuilds its own.
+    // Copying a Map happens once per beam child, so it carries only the two
+    // things a turn can change: the tiles, and each region's ink/instability.
+    // Everything else is shared through `stat`, and the scratch buffers are
+    // deliberately left behind -- they are working space, and copying them
+    // was pure overhead. Each copy lazily rebuilds its own.
     Map(const Map &o)
-        : grid(o.grid), towns(o.towns), regionById(o.regionById),
-          townCoord(o.townCoord), townCellFlag(o.townCellFlag),
-          regionHasTown(o.regionHasTown), pathTable(o.pathTable) {}
+        : grid(o.grid), regionInkedFlag(o.regionInkedFlag),
+          regionInstability(o.regionInstability), stat(o.stat),
+          pathTable(o.pathTable) {}
 
     Map &operator=(const Map &o)
     {
         if (this != &o)
         {
             grid = o.grid;
-            towns = o.towns;
-            regionById = o.regionById;
-            townCoord = o.townCoord;
-            townCellFlag = o.townCellFlag;
-            regionHasTown = o.regionHasTown;
+            regionInkedFlag = o.regionInkedFlag;
+            regionInstability = o.regionInstability;
+            stat = o.stat;
             pathTable = o.pathTable;
             // scratch* intentionally not copied.
         }
@@ -672,17 +702,13 @@ public:
     // a board directly. Nothing in the search relies on the distinction.
 public:
     Grid grid;
-    vector<Town> towns;
-    unordered_map<int, Region> regionById;
-
-    // quick lookup: town id -> coord
-    unordered_map<int, Coord> townCoord;
-    // Flat per-cell town flag. A set<pair> lookup here cost a tree walk and
-    // was hit millions of times per turn from the path/group scans.
-    vector<char> townCellFlag;
-
-    // Lookup table: regionId -> does this region contain a town?
-    unordered_map<int, bool> regionHasTown;
+    // Mutable per-region state, indexed by slot. Two flat byte arrays rather
+    // than fields on Region, so a beam copy is two small memcpys.
+    vector<char> regionInkedFlag;
+    vector<unsigned char> regionInstability;
+    // The board's immutable half. Not owned: every simulated Map points at the
+    // same one, which is what keeps a copy cheap.
+    const StaticMap *stat = nullptr;
 
     // Shared path cache. Not owned: every simulated Map points at the same
     // table, so a Map copy stays cheap and the cache is filled once.
@@ -707,9 +733,11 @@ public:
         }
     }
 
-    Region &getRegionAt(int x, int y)
+    // Slot of the region owning a cell. Every mutable region lookup goes
+    // through this, so the hot paths never touch a hash map.
+    int regionSlotAt(int x, int y) const
     {
-        return regionById[grid.get(x, y).regionId];
+        return stat->slotOfRegion(grid.get(x, y).regionId);
     }
 
 public:
@@ -728,14 +756,17 @@ public:
 
     // ---- construction / parsing ----
 
-    // Reads the width/height + per-tile (regionId, type) block.
-    void readTerrain(istream &in)
+    // Reads the width/height + per-tile (regionId, type) block, filling the
+    // shared immutable half. `target` outlives every Map built from it.
+    void readTerrain(istream &in, StaticMap &target)
     {
         int w, h;
         in >> w >> h;
         grid = Grid(w, h);
-        townCellFlag.assign(w * h, 0);
-        regionById.clear();
+        stat = &target;
+        target.townCellFlag.assign(w * h, 0);
+        target.regions.clear();
+        target.regionSlot.clear();
 
         for (int y = 0; y < h; y++)
         {
@@ -744,18 +775,34 @@ public:
                 int regionId, type;
                 in >> regionId >> type;
                 grid.get(x, y) = Tile(regionId, type);
-                if (!regionById.count(regionId))
+
+                if (regionId >= (int)target.regionSlot.size())
+                    target.regionSlot.resize(regionId + 1, -1);
+                if (target.regionSlot[regionId] < 0)
                 {
-                    regionById.emplace(regionId, Region(regionId));
+                    target.regionSlot[regionId] = (int)target.regions.size();
+                    target.regions.push_back(Region(regionId));
                 }
-                regionById[regionId].coords.push_back(Coord(x, y));
+                target.regions[target.regionSlot[regionId]].coords.push_back(
+                    Coord(x, y));
             }
         }
+
+        target.regionHasTown.assign(target.regions.size(), 0);
+        target.sortedRegionIds.clear();
+        target.sortedRegionIds.reserve(target.regions.size());
+        for (const Region &r : target.regions)
+            target.sortedRegionIds.push_back(r.id);
+        sort(target.sortedRegionIds.begin(), target.sortedRegionIds.end());
+
+        regionInkedFlag.assign(target.regions.size(), 0);
+        regionInstability.assign(target.regions.size(), 0);
     }
 
     // Reads the town block. Every wish (townId, otherTownId) found is appended
     // to outWishes so the caller keeps its own strategy-level list.
-    void readTowns(istream &in, vector<pair<int, int>> &outWishes)
+    void readTowns(istream &in, StaticMap &target,
+                   vector<pair<int, int>> &outWishes)
     {
         int townCount;
         in >> townCount;
@@ -772,21 +819,21 @@ public:
                 while (getline(ss, tmp, ','))
                     desired.push_back(stoi(tmp));
             }
-            towns.emplace_back(townId, Coord(townX, townY), desired);
-            getRegionAt(townX, townY).hasTown = true;
+            target.towns.emplace_back(townId, Coord(townX, townY), desired);
+            const int slot = regionSlotAt(townX, townY);
+            if (slot >= 0)
+            {
+                target.regions[slot].hasTown = true;
+                target.regionHasTown[slot] = 1;
+            }
 
-            townCoord[townId] = Coord(townX, townY);
-            townCellFlag[townY * grid.width + townX] = 1;
+            target.townCoord[townId] = Coord(townX, townY);
+            target.townCellFlag[townY * grid.width + townX] = 1;
 
             for (int other : desired)
             {
                 outWishes.emplace_back(townId, other);
             }
-        }
-
-        for (auto &kv : regionById)
-        {
-            regionHasTown[kv.first] = kv.second.hasTown;
         }
     }
 
@@ -794,11 +841,8 @@ public:
     // recorded into outActiveConnections for the caller's own bookkeeping.
     void readTurnState(istream &in, map<pair<int, int>, bool> &outActiveConnections)
     {
-        for (auto &kv : regionById)
-        {
-            kv.second.instability = 0;
-            kv.second.inked = false;
-        }
+        regionInkedFlag.assign(stat->regions.size(), 0);
+        regionInstability.assign(stat->regions.size(), 0);
 
         for (int y = 0; y < grid.height; y++)
         {
@@ -829,10 +873,16 @@ public:
                 tile.instability = (uint8_t)min(instability, 7);
 
                 // Mirror per-tile instability/ink onto the owning region.
-                Region &region = regionById[tile.regionId];
-                region.instability = max(region.instability, instability);
-                if (inked)
-                    region.inked = true;
+                // Capped at the byte: nothing compares it past the ink
+                // threshold, so the clamp is not observable.
+                const int slot = stat->slotOfRegion(tile.regionId);
+                if (slot >= 0)
+                {
+                    regionInstability[slot] = (unsigned char)max(
+                        (int)regionInstability[slot], min(instability, 255));
+                    if (inked)
+                        regionInkedFlag[slot] = 1;
+                }
             }
         }
 
@@ -840,10 +890,10 @@ public:
         // crossed it, exactly as a simulated DISRUPT would.
         if (pathTable)
         {
-            for (auto &kv : regionById)
+            for (size_t slot = 0; slot < regionInkedFlag.size(); slot++)
             {
-                if (kv.second.inked)
-                    pathTable->invalidateRegion(kv.first);
+                if (regionInkedFlag[slot])
+                    pathTable->invalidateRegion(stat->regions[slot].id);
             }
         }
     }
@@ -855,7 +905,7 @@ public:
     int tileRegion(int x, int y) const { return grid.get(x, y).regionId; }
     bool tileInked(int x, int y) const { return grid.get(x, y).inked; }
 
-    bool isTownCell(int x, int y) const { return townCellFlag[y * grid.width + x] != 0; }
+    bool isTownCell(int x, int y) const { return stat->townCellFlag[y * grid.width + x] != 0; }
     bool hasRail(int x, int y) const { return grid.get(x, y).tracksOwner != NO_OWNER; }
 
     // A rail can be placed only on an empty, non-town, passable tile whose
@@ -882,8 +932,8 @@ public:
         const Tile &tile = grid.get(x, y);
         if (tile.inked)
             return true;
-        auto it = regionById.find(tile.regionId);
-        return it != regionById.end() && it->second.inked;
+        const int slot = stat->slotOfRegion(tile.regionId);
+        return slot >= 0 && regionInkedFlag[slot] != 0;
     }
 
     int railCost(int x, int y) const { return terrainCost(grid.get(x, y).type); }
@@ -921,53 +971,40 @@ public:
 
     // ---- town queries ----
 
-    bool hasTown(int townId) const { return townCoord.count(townId) != 0; }
-    Coord townCoordOf(int townId) const { return townCoord.at(townId); }
-    const vector<Town> &allTowns() const { return towns; }
+    bool hasTown(int townId) const { return stat->townCoord.count(townId) != 0; }
+    Coord townCoordOf(int townId) const { return stat->townCoord.at(townId); }
+    const vector<Town> &allTowns() const { return stat->towns; }
 
     // ---- region queries ----
 
     bool regionContainsTown(int regionId) const
     {
-        auto it = regionHasTown.find(regionId);
-        return it != regionHasTown.end() && it->second;
+        const int slot = stat->slotOfRegion(regionId);
+        return slot >= 0 && stat->regionHasTown[slot] != 0;
     }
 
     bool regionInked(int regionId) const
     {
-        auto it = regionById.find(regionId);
-        return it != regionById.end() && it->second.inked;
+        const int slot = stat->slotOfRegion(regionId);
+        return slot >= 0 && regionInkedFlag[slot] != 0;
     }
 
-    vector<int> allRegionIds() const
-    {
-        vector<int> ids;
-        ids.reserve(regionById.size());
-        for (auto &kv : regionById)
-            ids.push_back(kv.first);
-        {
-            // PROFILE(sortRegionIds);
-            sort(ids.begin(), ids.end());
-        }
-        return ids;
-    }
+    // Sorted once at parse time, so a caller iterating regions costs nothing.
+    const vector<int> &allRegionIds() const { return stat->sortedRegionIds; }
 
     // Raises a region's instability, inking it (and erasing every rail it
     // contains) once it crosses the threshold.
     void disruptRegion(int regionId)
     {
-        auto it = regionById.find(regionId);
-        if (it == regionById.end())
-            return;
-        Region &region = it->second;
-        if (region.inked)
+        const int slot = stat->slotOfRegion(regionId);
+        if (slot < 0 || regionInkedFlag[slot])
             return;
 
-        region.instability += DISRUPT_INSTABILITY_GAIN;
-        if (region.instability >= INK_INSTABILITY_THRESHOLD)
+        regionInstability[slot] += DISRUPT_INSTABILITY_GAIN;
+        if (regionInstability[slot] >= INK_INSTABILITY_THRESHOLD)
         {
-            region.inked = true;
-            for (const Coord &c : region.coords)
+            regionInkedFlag[slot] = 1;
+            for (const Coord &c : stat->regions[slot].coords)
             {
                 Tile &tile = grid.get(c.x, c.y);
                 tile.inked = 1;
@@ -2454,6 +2491,9 @@ class Game
 public:
     int myId;
     int foeId;
+    // The board's immutable half, owned here. Every Map in the search points
+    // at it, so it must outlive them -- it does, Game owns the whole turn.
+    StaticMap staticMap;
     Map gameMap;
 
     // Shared by every simulated Map, so paths are computed once per terrain
@@ -2479,11 +2519,11 @@ public:
     {
         cin >> myId;
         foeId = 1 - myId;
-        gameMap.readTerrain(cin);
+        gameMap.readTerrain(cin, staticMap);
         pathTable.init(gameMap.width(), gameMap.height());
         gameMap.setPathTable(&pathTable);
         activeConnections.clear();
-        gameMap.readTowns(cin, wishes);
+        gameMap.readTowns(cin, staticMap, wishes);
     }
 
     void parse()

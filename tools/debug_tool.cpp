@@ -356,9 +356,9 @@ void DebugProbe::write(const string &path) const
 
     // Towns, with the connections each one wishes for.
     os << "  \"towns\": [";
-    for (size_t i = 0; i < board.towns.size(); i++)
+    for (size_t i = 0; i < board.allTowns().size(); i++)
     {
-        const Town &t = board.towns[i];
+        const Town &t = board.allTowns()[i];
         os << (i ? ",\n    " : "\n    ");
         os << "{\"id\": " << t.id << ", \"x\": " << t.coord.x
            << ", \"y\": " << t.coord.y << ", \"wishes\": [";
@@ -368,20 +368,19 @@ void DebugProbe::write(const string &path) const
     }
     os << "\n  ],\n";
 
-    // Regions, sorted by id so the viewer can index them directly.
-    vector<int> ids;
-    ids.reserve(board.regionById.size());
-    for (const auto &kv : board.regionById)
-        ids.push_back(kv.first);
-    sort(ids.begin(), ids.end());
+    // Regions, sorted by id so the viewer can index them directly. Ink and
+    // instability are per-board state, so they come off the Map, not Region.
+    const vector<int> &ids = board.allRegionIds();
 
     os << "  \"regionInfo\": [";
     for (size_t i = 0; i < ids.size(); i++)
     {
-        const Region &r = board.regionById.at(ids[i]);
+        const int slot = board.stat->slotOfRegion(ids[i]);
+        const Region &r = board.stat->regions[slot];
         os << (i ? ",\n    " : "\n    ");
-        os << "{\"id\": " << r.id << ", \"instability\": " << r.instability
-           << ", \"inked\": " << (r.inked ? "true" : "false")
+        os << "{\"id\": " << r.id
+           << ", \"instability\": " << (int)board.regionInstability[slot]
+           << ", \"inked\": " << (board.regionInkedFlag[slot] ? "true" : "false")
            << ", \"hasTown\": " << (r.hasTown ? "true" : "false")
            << ", \"cells\": " << r.coords.size() << "}";
     }
