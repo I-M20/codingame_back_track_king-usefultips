@@ -208,17 +208,25 @@ public:
     Connection(int f = -1, int t = -1) : fromTownId(f), toTownId(t) {}
 };
 
+// Packed to 4 bytes so a whole board fits in L1/L2: a beam state is copied
+// per child and scanned by every flood-fill, and the fields are all tiny
+// (regions number in the hundreds, owner is -1..2, instability caps at the
+// ink threshold). Accessors below return int, so callers see no difference.
 class Tile
 {
 public:
-    int regionId;
-    int type;
-    int tracksOwner;
-    bool inked;
-    int instability;
+    int16_t regionId;
+    uint8_t type;
+    // Ink is a flag on the owner rather than its own byte: an inked tile
+    // holds no rail, so the two can never disagree.
+    int8_t tracksOwner : 4;
+    uint8_t inked : 1;
+    uint8_t instability : 3;
     Tile(int r = 0, int t = 0)
-        : regionId(r), type(t), tracksOwner(NO_OWNER), inked(false), instability(0) {}
+        : regionId((int16_t)r), type((uint8_t)t), tracksOwner(NO_OWNER),
+          inked(0), instability(0) {}
 };
+static_assert(sizeof(Tile) == 4, "Tile must stay 4 bytes");
 
 class Town
 {
@@ -814,9 +822,11 @@ public:
                 Tile &tile = grid.get(x, y);
                 // An inked region has been erased: whatever the referee
                 // reports, it holds no usable rail any more.
-                tile.tracksOwner = inked ? NO_OWNER : tracksOwner;
-                tile.inked = inked;
-                tile.instability = instability;
+                tile.tracksOwner = (int8_t)(inked ? NO_OWNER : tracksOwner);
+                tile.inked = inked ? 1 : 0;
+                // The packed field holds 0..7; nothing reads a tile's
+                // instability past the ink threshold, so saturating is exact.
+                tile.instability = (uint8_t)min(instability, 7);
 
                 // Mirror per-tile instability/ink onto the owning region.
                 Region &region = regionById[tile.regionId];
@@ -884,7 +894,7 @@ public:
     {
         Tile &tile = grid.get(x, y);
         if (tile.tracksOwner == NO_OWNER)
-            tile.tracksOwner = owner;
+            tile.tracksOwner = (int8_t)owner;
         else if (tile.tracksOwner != owner)
             tile.tracksOwner = NEUTRAL_OWNER;
     }
@@ -896,7 +906,7 @@ public:
     {
         Tile &tile = grid.get(x, y);
         const int previous = tile.tracksOwner;
-        tile.tracksOwner = owner;
+        tile.tracksOwner = (int8_t)owner;
         return previous;
     }
 
@@ -960,7 +970,7 @@ public:
             for (const Coord &c : region.coords)
             {
                 Tile &tile = grid.get(c.x, c.y);
-                tile.inked = true;
+                tile.inked = 1;
                 tile.tracksOwner = NO_OWNER;
             }
             // The region just became impassable: every cached path crossing

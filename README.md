@@ -149,6 +149,75 @@ sont connectés — l'état dans lequel se passe ~75% d'une partie.
 <!-- - openGapTotal prends 1/2 du temps total.. Supprimer entierement et refaire le cache a* avec invalidation quand région supprimé. -->
 <!-- - Lister les endroits ou on fait des floodfill/a* et mettre en cache tout ça -->
 
+### Optimizations list
+
+Here are the optimizations, ranked by expected gain.
+
+1. The sort is not your problem — but fix it anyway (cheap win)
+main.cpp:2382 full-sorts nextBeam when you only keep 30. Worse, BeamNode is huge and non-trivially movable: it contains a Map (which holds vector<Tile>, vector<Town> with nested vectors, three unordered_maps, vector<char>) plus a map<pair<int,int>,bool>. Every std::sort swap is 3 moves of ~10 pointers + tree/hash-table pointer fixups. With nextBeam.size() typically 30 × NESTED_BEAM_WIDTH(40) = 1200, that's ~12k node moves.
+
+Don't sort nodes at all — sort an index/score array:
+
+
+// scores paired with index: 8 bytes, fits L1, trivially swappable
+static vector<pair<int,int>> order;  // (score, idx), member scratch
+order.clear();
+order.reserve(nextBeam.size());
+for (int i = 0; i < (int)nextBeam.size(); i++)
+    order.emplace_back(nextBeam[i].score, i);
+
+const int keep = min((int)order.size(), BEAM_WIDTH);
+nth_element(order.begin(), order.begin() + keep - 1, order.end(), greater<>());
+order.resize(keep);
+// front-of-beam needs to be the max, and run() scans the beam in rank order
+sort(order.begin(), order.end(), greater<>());
+
+vector<BeamNode> kept;
+kept.reserve(keep);
+for (auto &e : order) kept.push_back(move(nextBeam[e.second]));
+beam = move(kept);
+nth_element is O(n) vs partial_sort's O(n log k), and you then sort only 30 pairs. Combined with the 8-byte payload this turns ~12k BeamNode moves into ~1200 cheap int-pair swaps + exactly 30 node moves. That's the single biggest sort-side win — much more than swapping sort→partial_sort on the nodes directly.
+
+Note partial_sort alone would still move BeamNodes, so it's the wrong tool here.
+
+2. The real hotspot: child.state = node.state (Map copy)
+At main.cpp:2307 you deep-copy a whole Map per child — up to 1200 times per depth. Each copy is:
+
+vector<Tile> — 20 bytes/tile × W×H (fine, one memcpy)
+vector<Town> — one heap allocation per town for desiredConnections
+unordered_map<int,Region> — every Region holds vector<Coord>, so one allocation per region plus node-per-entry
+unordered_map<int,Coord>, unordered_map<int,bool> — node-per-entry allocations
+This is likely 10–100× the cost of the sort. Three fixes, in order of value:
+
+(a) towns, regionById, townCoord, regionHasTown, townCellFlag are immutable during the search (only grid tiles change: rails, ink, instability — and regionById[].inked/instability if you mutate that). Split Map into a shared const StaticMap* (like you already did for pathTable) and a mutable per-node part. A BeamNode then copies only vector<Tile> — one memcpy — and the copy becomes essentially free.
+
+(b) Shrink Tile from 20 → 4 bytes. regionId, type, tracksOwner, inked, instability all fit in bytes:
+
+
+struct Tile {          // 4 bytes instead of 20
+    int16_t regionId;
+    uint8_t type;
+    int8_t  tracksOwner;   // NO_OWNER = -1
+    // inked + instability folded into region state, or:
+    // uint8_t packed; // inked:1, instability:7
+};
+A 30×20 board goes from 12 KB to 2.4 KB per state — a beam of 30 states fits in L2 instead of thrashing it, and your BFS/flood-fill scans in openGapTotal get 5× the cache lines per fetch. This probably helps the flood-fills more than the copies.
+
+(c) map<pair<int,int>,bool> active per node — a red-black tree copied per child, one allocation per wish. Since wishes is a fixed indexed vector, replace with uint64_t activeMask (or array<bool, MAX_WISHES>). One word instead of a tree. simulateTurn rebuilds it anyway, so this is a local change.
+
+3. Avoid constructing children you'll discard
+You build all ~1200 children then keep 30. Since evaluate needs the simulated board you can't score-before-build directly, but you can:
+
+Reuse node storage across depths. Keep two vector<BeamNode> buffers as members, clear() instead of reallocating; nextBeam.reserve(beam.size() * NESTED_BEAM_WIDTH) once. Right now nextBeam is constructed fresh per depth and push_back reallocates ~11 times, each realloc moving every node.
+Cheap prefilter: myTurns from generateActionSets is already ranked by closedGap. Only the top-K per parent can realistically survive the global cut. If NESTED_BEAM_WIDTH=40 but the global beam is 30, expanding 40 children from each of 30 parents to keep 30 total is heavily wasteful. Try min(NESTED_BEAM_WIDTH, 8) at depth > 0 and measure — you'd likely get 2–3 extra depths for the same budget, which is worth far more than breadth at a single depth.
+
+4. Structural criticism of the search itself
+generateActionSets is called twice per node (foe then self), and the foe call only uses foeTurns.front(). That's a full nested beam (NESTED_BEAM_WIDTH=40 lines) to extract one answer. Call it with width 1–4 for the foe. Potentially a ~40% cut of total search time on its own.
+The foe plan is recomputed at every node even though sibling nodes at depth 0 share the identical node.state (all children of the same parent see the same board before your rails). Hoist and cache it per parent — you already do, but it's per-node, and at depth 0 there's exactly one node so that's fine; at deeper depths siblings diverge, so nothing to gain there. The width reduction is the real fix.
+outOfTime() calls steady_clock::now() per action — that's a vDSO call, ~20–25 ns. With ~1200 actions/depth × 5 depths it's ~150 µs, ~0.3% of a 50 ms budget. Acceptable, but if you shrink the per-child cost as above it becomes relatively significant; check every 8th iteration with a counter mask.
+Ordering the merge: at main.cpp:2374 the merged previous beam is already sorted. You could std::merge the sorted old beam with the ranked new children instead of re-ranking everything — minor once the index-sort is in.
+Suggested order of work: (2a) shared static Map + Tile shrink, then (1) index-sort, then (4) foe width. (2a) alone should be the multiplier.
+
 ## Debug viewer
 
 `tools/` contient une interface qui affiche la map et les valeurs internes de
