@@ -152,6 +152,15 @@ static const int NEUTRAL_OWNER = 2;
 static const int DISRUPT_INSTABILITY_GAIN = 1;
 static const int INK_INSTABILITY_THRESHOLD = 4;
 
+// Which wishes are currently connected, one bit per index into the search's
+// `wishes` list. A beam node carries this by value, so it is a word rather
+// than a map: a child copy is a register move instead of a tree clone, and
+// "is this wish paying?" is a shift and a test. Boards run to ~10 wishes, so
+// the 64 slots are ample; anything past them is treated as never connected,
+// which costs a little search quality but can never corrupt a state.
+typedef unsigned long long ActiveMask;
+static const size_t ACTIVE_MASK_BITS = 64;
+
 // Direction priority: NORTH, EAST, SOUTH, WEST. Used both for path
 // tie-breaking and for choosing which neighbour a rail advances to.
 static const int DIR_X[4] = {0, 1, 0, -1};
@@ -1305,7 +1314,8 @@ class BeamNode
 {
 public:
     Map state;
-    map<pair<int, int>, bool> active;
+    // Bit i: wishes[i] is connected on this state's board.
+    ActiveMask active;
     int score;
     // Points banked along this line: every simulated turn adds what each
     // player earned from the connections active at that moment, the way
@@ -1319,7 +1329,7 @@ public:
     int rootDisrupt;
 
     BeamNode()
-        : score(0), bankedSelf(0), bankedOther(0), turns(0),
+        : active(0), score(0), bankedSelf(0), bankedOther(0), turns(0),
           rootDisrupt(-1) {}
 };
 
@@ -1339,7 +1349,7 @@ public:
     // The turn's real position. Only ever read, to seed the root node, which
     // takes its own copy: the search never mutates the caller's board.
     const Map *startBoard = nullptr;
-    map<pair<int, int>, bool> startActive;
+    ActiveMask startActive = 0;
     // The turn's wishes, one entry per pair. The referee lists a wish from
     // both of its towns, so (a,b) and (b,a) both arrive; keeping both would
     // count every connection's income and every gap twice, and would make the
@@ -1357,10 +1367,6 @@ public:
     // the hottest function in the search does not allocate.
     mutable vector<int> gapLabel;
     mutable vector<int> gapQueue;
-    // Generation stamps, so the per-cell buffers are never re-zeroed: a value
-    // counts as present only when its stamp matches the current run. Without
-    // this, every call memset components*N ints (15k+ on a dense board) before
-    // doing any work, which was the bulk of openGapTotal's cost.
     mutable vector<int> gapLabelStamp;
     mutable vector<int> gapDistStamp;
     // Labels and distances are stamped separately: one openGapTotal call is a
@@ -1408,7 +1414,6 @@ public:
         myId = selfId;
         foeId = otherId;
         startBoard = &turnBoard;
-        startActive = turnActive;
 
         wishes.clear();
         set<pair<int, int>> seenWish;
@@ -1418,6 +1423,18 @@ public:
             auto key = a < b ? make_pair(a, b) : make_pair(b, a);
             if (seenWish.insert(key).second)
                 wishes.push_back(key);
+        }
+
+        // The referee's list, folded onto the wish indices the search uses.
+        // It names a connection in whichever direction it found it, so both
+        // orderings are looked up.
+        startActive = 0;
+        for (size_t i = 0; i < wishes.size() && i < ACTIVE_MASK_BITS; i++)
+        {
+            const pair<int, int> &w = wishes[i];
+            if (turnActive.count(w) != 0 ||
+                turnActive.count({w.second, w.first}) != 0)
+                startActive |= (ActiveMask)1 << i;
         }
 
         turnStart = start;
@@ -1491,25 +1508,26 @@ public:
     // would collapse to zero in integers without it.
     static const int SCORE_SCALE = 1 << 20;
 
-    // The referee names a connection in whichever direction it found it, so
-    // both orderings are tried.
-    static bool isActiveWish(const map<pair<int, int>, bool> &active,
-                             const pair<int, int> &wish)
+    // Wishes are addressed by their index in the search's list, so direction
+    // no longer matters here: setup() folded the referee's ordering away when
+    // it built the mask.
+    static bool isActiveWish(ActiveMask active, size_t index)
     {
-        return active.count(wish) != 0 ||
-               active.count({wish.second, wish.first}) != 0;
+        return index < ACTIVE_MASK_BITS &&
+               (active & ((ActiveMask)1 << index)) != 0;
     }
 
     static WishGeometry wishGeometry(const Map &board,
                                      const vector<pair<int, int>> &wishes,
-                                     const map<pair<int, int>, bool> &active)
+                                     ActiveMask active)
     {
         WishGeometry geo;
         geo.width = board.width();
 
         vector<Coord> path;
-        for (const auto &wish : wishes)
+        for (size_t wi = 0; wi < wishes.size(); wi++)
         {
+            const pair<int, int> &wish = wishes[wi];
             if (!board.hasTown(wish.first) || !board.hasTown(wish.second))
                 continue;
             Coord ta = board.townCoordOf(wish.first);
@@ -1517,7 +1535,7 @@ public:
 
             // Already connected: this turn cannot make it any more connected,
             // but it pays every turn, so its route is recorded instead.
-            if (isActiveWish(active, wish))
+            if (isActiveWish(active, wi))
             {
                 board.connectionPathInto(ta, tb, path);
                 if (path.empty())
@@ -1682,7 +1700,7 @@ public:
     // just one with paint left over. `statesSeen` counts states built.
     vector<ActionSet> generateActionSets(const Map &startBoard,
                                          const vector<pair<int, int>> &wishes,
-                                         const map<pair<int, int>, bool> &active,
+                                         ActiveMask active,
                                          int owner, int keep, int &statesSeen)
     {
         // PROFILE(generateActionSets);
@@ -1942,22 +1960,23 @@ public:
     // laid this turn can complete a connection and an ink can break one.
     void turnIncome(Map &board, const vector<pair<int, int>> &wishes,
                     int selfId, int otherId, int &outSelf, int &outOther,
-                    map<pair<int, int>, bool> &outActive) const
+                    ActiveMask &outActive) const
     {
         outSelf = 0;
         outOther = 0;
-        outActive.clear();
+        outActive = 0;
 
-        for (const auto &wish : wishes)
+        for (size_t wi = 0; wi < wishes.size(); wi++)
         {
-            int a = wish.first, b = wish.second;
+            int a = wishes[wi].first, b = wishes[wi].second;
             if (!board.hasTown(a) || !board.hasTown(b))
                 continue;
             vector<Coord> path = board.connectionPath(board.townCoordOf(a), board.townCoordOf(b));
             if (path.empty())
                 continue;
 
-            outActive[wish] = true;
+            if (wi < ACTIVE_MASK_BITS)
+                outActive |= (ActiveMask)1 << wi;
 
             for (const Coord &c : path)
             {

@@ -153,33 +153,6 @@ sont connectés — l'état dans lequel se passe ~75% d'une partie.
 
 Here are the optimizations, ranked by expected gain.
 
-1. The sort is not your problem — but fix it anyway (cheap win)
-main.cpp:2382 full-sorts nextBeam when you only keep 30. Worse, BeamNode is huge and non-trivially movable: it contains a Map (which holds vector<Tile>, vector<Town> with nested vectors, three unordered_maps, vector<char>) plus a map<pair<int,int>,bool>. Every std::sort swap is 3 moves of ~10 pointers + tree/hash-table pointer fixups. With nextBeam.size() typically 30 × NESTED_BEAM_WIDTH(40) = 1200, that's ~12k node moves.
-
-Don't sort nodes at all — sort an index/score array:
-
-
-// scores paired with index: 8 bytes, fits L1, trivially swappable
-static vector<pair<int,int>> order;  // (score, idx), member scratch
-order.clear();
-order.reserve(nextBeam.size());
-for (int i = 0; i < (int)nextBeam.size(); i++)
-    order.emplace_back(nextBeam[i].score, i);
-
-const int keep = min((int)order.size(), BEAM_WIDTH);
-nth_element(order.begin(), order.begin() + keep - 1, order.end(), greater<>());
-order.resize(keep);
-// front-of-beam needs to be the max, and run() scans the beam in rank order
-sort(order.begin(), order.end(), greater<>());
-
-vector<BeamNode> kept;
-kept.reserve(keep);
-for (auto &e : order) kept.push_back(move(nextBeam[e.second]));
-beam = move(kept);
-nth_element is O(n) vs partial_sort's O(n log k), and you then sort only 30 pairs. Combined with the 8-byte payload this turns ~12k BeamNode moves into ~1200 cheap int-pair swaps + exactly 30 node moves. That's the single biggest sort-side win — much more than swapping sort→partial_sort on the nodes directly.
-
-Note partial_sort alone would still move BeamNodes, so it's the wrong tool here.
-
 2. (c) map<pair<int,int>,bool> active per node — a red-black tree copied per child, one allocation per wish. Since wishes is a fixed indexed vector, replace with uint64_t activeMask (or array<bool, MAX_WISHES>). One word instead of a tree. simulateTurn rebuilds it anyway, so this is a local change.
 
 3. Avoid constructing children you'll discard

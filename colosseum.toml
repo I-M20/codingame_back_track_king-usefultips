@@ -1,5 +1,5 @@
 [project]
-environment = "btk_v2_comp"
+environment = "v2_perf"
 preset = "summer2026"
 league = "bronze"
 # challenge = "summer2026"  # uncomment to link CG online stats
