@@ -330,6 +330,10 @@ même tour peuvent différer. Les valeurs de la heatmap, elles, sont stables :
 
 ## Versions
 
+### v2.5
+
+split Map class into mutable + shared-immutable classes, reducing a lot the beam node structure manipulation/copy
+
 ### v2.4
 
 Reduce structure byte size
