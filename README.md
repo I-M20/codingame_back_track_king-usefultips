@@ -353,6 +353,10 @@ même tour peuvent différer. Les valeurs de la heatmap, elles, sont stables :
 
 ## Versions
 
+### v2.4
+
+Reduce structure byte size
+
 ### v2.3
 
 Try nested beam search heuristic improvments
