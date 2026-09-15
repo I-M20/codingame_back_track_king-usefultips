@@ -1,0 +1,7 @@
+connection class for getting fr and to town ids
+region class, helps w inking n instability
+terraincost class using switch cases
+aStar - compare w mine
+pathtable class for getting paths, paths in regions, inked regions
+**PUBLIC**
+
